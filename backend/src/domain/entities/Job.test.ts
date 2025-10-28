@@ -1,7 +1,7 @@
-import { Job } from './Job'
+import { Job } from './Job';
 
 describe('Job Entity', () => {
-  let job: Job
+  let job: Job;
 
   beforeEach(() => {
     job = new Job(
@@ -20,19 +20,19 @@ describe('Job Entity', () => {
       'https://linkedin.com/jobs/1',
       new Date('2024-10-20'),
       true
-    )
-  })
+    );
+  });
 
   describe('Constructor', () => {
     it('should create a job with all properties', () => {
-      expect(job.id).toBe('1')
-      expect(job.title).toBe('React Developer')
-      expect(job.company).toBe('TechCorp')
-      expect(job.technologies).toEqual(['React', 'TypeScript'])
-      expect(job.location).toBe('Paris')
-      expect(job.isActive).toBe(true)
-    })
-  })
+      expect(job.id).toBe('1');
+      expect(job.title).toBe('React Developer');
+      expect(job.company).toBe('TechCorp');
+      expect(job.technologies).toEqual(['React', 'TypeScript']);
+      expect(job.location).toBe('Paris');
+      expect(job.isActive).toBe(true);
+    });
+  });
 
   describe('isRecent()', () => {
     it('should return true for recent jobs', () => {
@@ -52,14 +52,14 @@ describe('Job Entity', () => {
         'url',
         new Date(), // Today
         true
-      )
+      );
 
-      expect(recentJob.isRecent(7)).toBe(true)
-    })
+      expect(recentJob.isRecent(7)).toBe(true);
+    });
 
     it('should return false for old jobs', () => {
-      const oldDate = new Date()
-      oldDate.setDate(oldDate.getDate() - 10)
+      const oldDate = new Date();
+      oldDate.setDate(oldDate.getDate() - 10);
 
       const oldJob = new Job(
         '3',
@@ -77,29 +77,29 @@ describe('Job Entity', () => {
         'url',
         oldDate,
         true
-      )
+      );
 
-      expect(oldJob.isRecent(7)).toBe(false)
-    })
-  })
+      expect(oldJob.isRecent(7)).toBe(false);
+    });
+  });
 
   describe('hasTechnology()', () => {
     it('should return true when technology exists (case-insensitive)', () => {
-      expect(job.hasTechnology('react')).toBe(true)
-      expect(job.hasTechnology('REACT')).toBe(true)
-      expect(job.hasTechnology('TypeScript')).toBe(true)
-    })
+      expect(job.hasTechnology('react')).toBe(true);
+      expect(job.hasTechnology('REACT')).toBe(true);
+      expect(job.hasTechnology('TypeScript')).toBe(true);
+    });
 
     it('should return false when technology does not exist', () => {
-      expect(job.hasTechnology('Python')).toBe(false)
-      expect(job.hasTechnology('Java')).toBe(false)
-    })
-  })
+      expect(job.hasTechnology('Python')).toBe(false);
+      expect(job.hasTechnology('Java')).toBe(false);
+    });
+  });
 
   describe('getSalaryRange()', () => {
     it('should return formatted range when both min and max provided', () => {
-      expect(job.getSalaryRange()).toBe('50k - 70k')
-    })
+      expect(job.getSalaryRange()).toBe('50k - 70k');
+    });
 
     it('should return "min+" when only min provided', () => {
       const jobMinOnly = new Job(
@@ -118,10 +118,10 @@ describe('Job Entity', () => {
         'url',
         new Date(),
         true
-      )
+      );
 
-      expect(jobMinOnly.getSalaryRange()).toBe('45k+')
-    })
+      expect(jobMinOnly.getSalaryRange()).toBe('45k+');
+    });
 
     it('should return "Up to max" when only max provided', () => {
       const jobMaxOnly = new Job(
@@ -140,10 +140,10 @@ describe('Job Entity', () => {
         'url',
         new Date(),
         true
-      )
+      );
 
-      expect(jobMaxOnly.getSalaryRange()).toBe('Up to 60k')
-    })
+      expect(jobMaxOnly.getSalaryRange()).toBe('Up to 60k');
+    });
 
     it('should return "Not specified" when neither provided', () => {
       const jobNoSalary = new Job(
@@ -162,9 +162,9 @@ describe('Job Entity', () => {
         'url',
         new Date(),
         true
-      )
+      );
 
-      expect(jobNoSalary.getSalaryRange()).toBe('Not specified')
-    })
-  })
-})
+      expect(jobNoSalary.getSalaryRange()).toBe('Not specified');
+    });
+  });
+});
