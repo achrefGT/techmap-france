@@ -3,8 +3,9 @@ import { formatCurrency, formatDate } from './format'
 
 describe('formatCurrency', () => {
   it('formats currency correctly', () => {
-    expect(formatCurrency(1000)).toBe('1 000,00 €')
-    expect(formatCurrency(50.5)).toBe('50,50 €')
+    // Use \u202f (narrow no-break space) which is what Intl.NumberFormat uses
+    expect(formatCurrency(1000)).toBe('1\u202f000,00\u00a0€')
+    expect(formatCurrency(50.5)).toBe('50,50\u00a0€')
   })
 })
 
