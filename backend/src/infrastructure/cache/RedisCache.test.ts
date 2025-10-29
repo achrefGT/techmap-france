@@ -12,7 +12,7 @@ describe('RedisCache', () => {
   beforeEach(async () => {
     // Clear all mocks
     jest.clearAllMocks();
-    
+
     // Setup environment variables
     process.env.UPSTASH_REDIS_REST_URL = 'https://test.upstash.io';
     process.env.UPSTASH_REDIS_REST_TOKEN = 'test-token';
@@ -54,7 +54,7 @@ describe('RedisCache', () => {
     it('should throw error if UPSTASH_REDIS_REST_URL is missing', async () => {
       delete process.env.UPSTASH_REDIS_REST_URL;
       jest.resetModules();
-      
+
       await expect(async () => {
         await import('./RedisCache');
       }).rejects.toThrow('Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN');
@@ -63,7 +63,7 @@ describe('RedisCache', () => {
     it('should throw error if UPSTASH_REDIS_REST_TOKEN is missing', async () => {
       delete process.env.UPSTASH_REDIS_REST_TOKEN;
       jest.resetModules();
-      
+
       await expect(async () => {
         await import('./RedisCache');
       }).rejects.toThrow('Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN');
@@ -377,7 +377,7 @@ describe('RedisCache', () => {
   describe('retry logic', () => {
     it('should retry on rate limit error', async () => {
       const rateLimitError = { status: 429, message: 'Too many requests' };
-      
+
       mockRedisInstance.get
         .mockRejectedValueOnce(rateLimitError)
         .mockRejectedValueOnce(rateLimitError)
@@ -429,7 +429,7 @@ describe('RedisCache', () => {
       mockRedisInstance.scan
         .mockResolvedValueOnce(['1', ['test:key1', 'test:key2']])
         .mockResolvedValueOnce(['0', ['test:key3']]);
-      
+
       mockRedisInstance.del.mockResolvedValue(1);
 
       const result = await cache.clear('test:*');

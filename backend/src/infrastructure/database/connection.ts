@@ -4,7 +4,6 @@ dotenv.config();
 
 const isProduction = process.env.NODE_ENV === 'production';
 
-
 const poolMax = Number(process.env.PG_POOL_MAX ?? (isProduction ? 5 : 5));
 
 export const pool = new Pool({

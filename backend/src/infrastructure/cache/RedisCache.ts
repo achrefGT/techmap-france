@@ -14,13 +14,13 @@ interface RetryableError {
 
 /**
  * Redis cache wrapper for Upstash
- * 
+ *
  * Features:
  * - Automatic key prefixing/namespacing
  * - Index tracking for safe bulk operations
  * - Rate limit friendly operations (free tier optimized)
  * - Retry logic with exponential backoff
- * 
+ *
  * Notes:
  * - Call cleanExpiredFromIndex() periodically (e.g. via cron) to prevent TTL index bloat
  * - For large datasets (>10k keys), consider sharding index sets
@@ -31,19 +31,19 @@ export class RedisCache {
   private prefix = process.env.REDIS_KEY_PREFIX ?? 'app:';
   private indexSetKey = `${this.prefix}__keys_index`;
   private ttlIndexSetKey = `${this.prefix}__ttl_keys_index`;
-  
+
   // Free tier friendly: limit concurrent operations
   private readonly MAX_BATCH_SIZE = 50;
   private readonly MAX_RETRIES = 3;
   private readonly INITIAL_RETRY_DELAY = 100;
 
   constructor() {
-    this.client = new Redis({ 
-      url: URL, 
+    this.client = new Redis({
+      url: URL,
       token: TOKEN,
       retry: {
         retries: this.MAX_RETRIES,
-        backoff: (retryCount) => Math.min(this.INITIAL_RETRY_DELAY * Math.pow(2, retryCount), 3000),
+        backoff: retryCount => Math.min(this.INITIAL_RETRY_DELAY * Math.pow(2, retryCount), 3000),
       },
     });
   }
@@ -60,45 +60,45 @@ export class RedisCache {
     operationName: string = 'operation'
   ): Promise<T> {
     let lastError: unknown;
-    
+
     for (let attempt = 0; attempt <= this.MAX_RETRIES; attempt++) {
       try {
         return await operation();
       } catch (err: unknown) {
         lastError = err;
-        
+
         // Check if it's a rate limit error (429 or similar)
         const error = err as RetryableError;
-        const isRateLimit = error?.status === 429 || 
-                           error?.message?.includes('rate limit') ||
-                           error?.message?.includes('too many requests');
-        
+        const isRateLimit =
+          error?.status === 429 ||
+          error?.message?.includes('rate limit') ||
+          error?.message?.includes('too many requests');
+
         if (isRateLimit && attempt < this.MAX_RETRIES) {
           const delay = Math.min(this.INITIAL_RETRY_DELAY * Math.pow(2, attempt), 3000);
-          console.warn(`${operationName}: Rate limited, retrying in ${delay}ms (attempt ${attempt + 1}/${this.MAX_RETRIES})`);
+          console.warn(
+            `${operationName}: Rate limited, retrying in ${delay}ms (attempt ${attempt + 1}/${this.MAX_RETRIES})`
+          );
           await new Promise(resolve => setTimeout(resolve, delay));
           continue;
         }
-        
+
         // Don't retry non-rate-limit errors
         if (!isRateLimit) {
           break;
         }
       }
     }
-    
+
     throw lastError;
   }
 
   async get<T>(key: string): Promise<T | null> {
     try {
-      const raw = await this.withRetry(
-        () => this.client.get(this.k(key)),
-        'GET'
-      );
-      
+      const raw = await this.withRetry(() => this.client.get(this.k(key)), 'GET');
+
       if (raw == null) return null;
-      
+
       try {
         return JSON.parse(String(raw)) as T;
       } catch {
@@ -116,16 +116,16 @@ export class RedisCache {
    */
   async mget<T>(keys: string[]): Promise<(T | null)[]> {
     if (keys.length === 0) return [];
-    
+
     try {
-      const prefixedKeys = keys.map((k) => this.k(k));
-      
+      const prefixedKeys = keys.map(k => this.k(k));
+
       // Use array syntax for better compatibility
       const values = await this.withRetry(
         () => this.client.mget<(string | null)[]>(prefixedKeys),
         'MGET'
       );
-      
+
       return (values || []).map((raw: string | null) => {
         if (raw == null) return null;
         try {
@@ -146,14 +146,11 @@ export class RedisCache {
    */
   async set(key: string, value: unknown, ttlSeconds?: number): Promise<boolean> {
     const payload = typeof value === 'string' ? value : JSON.stringify(value);
-    
+
     try {
       if (ttlSeconds) {
-        await this.withRetry(
-          () => this.client.setex(this.k(key), ttlSeconds, payload),
-          'SETEX'
-        );
-        
+        await this.withRetry(() => this.client.setex(this.k(key), ttlSeconds, payload), 'SETEX');
+
         // Best effort: track in TTL index (may fail independently)
         try {
           await this.client.sadd(this.ttlIndexSetKey, this.k(key));
@@ -162,11 +159,8 @@ export class RedisCache {
           // Not critical - key will still expire, just won't be tracked
         }
       } else {
-        await this.withRetry(
-          () => this.client.set(this.k(key), payload),
-          'SET'
-        );
-        
+        await this.withRetry(() => this.client.set(this.k(key), payload), 'SET');
+
         try {
           await this.client.sadd(this.indexSetKey, this.k(key));
         } catch (indexErr) {
@@ -182,17 +176,14 @@ export class RedisCache {
 
   async del(key: string): Promise<boolean> {
     try {
-      await this.withRetry(
-        () => this.client.del(this.k(key)),
-        'DEL'
-      );
-      
+      await this.withRetry(() => this.client.del(this.k(key)), 'DEL');
+
       // Clean up from both indices (best effort)
       await Promise.allSettled([
         this.client.srem(this.indexSetKey, this.k(key)),
         this.client.srem(this.ttlIndexSetKey, this.k(key)),
       ]);
-      
+
       return true;
     } catch (err) {
       console.error('Redis DEL error:', err);
@@ -202,10 +193,7 @@ export class RedisCache {
 
   async exists(key: string): Promise<boolean> {
     try {
-      const result = await this.withRetry(
-        () => this.client.exists(this.k(key)),
-        'EXISTS'
-      );
+      const result = await this.withRetry(() => this.client.exists(this.k(key)), 'EXISTS');
       // Safely coerce to number (handles string "1" or number 1)
       return Number(result) === 1;
     } catch (err) {
@@ -216,10 +204,7 @@ export class RedisCache {
 
   async ttl(key: string): Promise<number> {
     try {
-      const result = await this.withRetry(
-        () => this.client.ttl(this.k(key)),
-        'TTL'
-      );
+      const result = await this.withRetry(() => this.client.ttl(this.k(key)), 'TTL');
       return Number(result);
     } catch (err) {
       console.error('Redis TTL error:', err);
@@ -229,18 +214,15 @@ export class RedisCache {
 
   async increment(key: string, amount: number = 1): Promise<number | null> {
     try {
-      const result = await this.withRetry(
-        () => this.client.incrby(this.k(key), amount),
-        'INCRBY'
-      );
-      
+      const result = await this.withRetry(() => this.client.incrby(this.k(key), amount), 'INCRBY');
+
       // Track in index (best effort)
       try {
         await this.client.sadd(this.indexSetKey, this.k(key));
       } catch {
         // Ignore index errors for counters
       }
-      
+
       return Number(result);
     } catch (err) {
       console.error('Redis INCREMENT error:', err);
@@ -250,17 +232,14 @@ export class RedisCache {
 
   async decrement(key: string, amount: number = 1): Promise<number | null> {
     try {
-      const result = await this.withRetry(
-        () => this.client.decrby(this.k(key), amount),
-        'DECRBY'
-      );
-      
+      const result = await this.withRetry(() => this.client.decrby(this.k(key), amount), 'DECRBY');
+
       try {
         await this.client.sadd(this.indexSetKey, this.k(key));
       } catch {
         // Ignore index errors
       }
-      
+
       return Number(result);
     } catch (err) {
       console.error('Redis DECREMENT error:', err);
@@ -300,11 +279,8 @@ export class RedisCache {
     for (let i = 0; i < keys.length; i += this.MAX_BATCH_SIZE) {
       const batch = keys.slice(i, i + this.MAX_BATCH_SIZE);
       try {
-        await this.withRetry(
-          () => this.client.del(...batch),
-          'BATCH_DEL'
-        );
-        
+        await this.withRetry(() => this.client.del(...batch), 'BATCH_DEL');
+
         // Small delay between batches to be nice to free tier
         if (i + this.MAX_BATCH_SIZE < keys.length) {
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -330,18 +306,16 @@ export class RedisCache {
       // Check existence in batches
       for (let i = 0; i < ttlMembers.length; i += this.MAX_BATCH_SIZE) {
         const batch = ttlMembers.slice(i, i + this.MAX_BATCH_SIZE);
-        
+
         // Check each key in batch
-        const results = await Promise.allSettled(
-          batch.map(key => this.client.exists(key))
-        );
-        
+        const results = await Promise.allSettled(batch.map(key => this.client.exists(key)));
+
         results.forEach((result, idx) => {
           if (result.status === 'fulfilled' && Number(result.value) === 0) {
             expiredKeys.push(batch[idx]);
           }
         });
-        
+
         // Small delay between batches
         if (i + this.MAX_BATCH_SIZE < ttlMembers.length) {
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -369,7 +343,7 @@ export class RedisCache {
    */
   async clear(pattern: string): Promise<number> {
     let totalDeleted = 0;
-    
+
     try {
       let cursor = '0';
       do {
@@ -377,10 +351,10 @@ export class RedisCache {
           () => this.client.scan(cursor, { match: pattern, count: this.MAX_BATCH_SIZE }),
           'SCAN'
         );
-        
+
         cursor = String(result[0]);
         const keys = result[1] || [];
-        
+
         if (keys.length > 0) {
           try {
             await this.client.del(...keys);
@@ -389,13 +363,13 @@ export class RedisCache {
             console.error('Failed to delete batch:', delErr);
           }
         }
-        
+
         // Small delay between scans to respect rate limits
         if (cursor !== '0') {
           await new Promise(resolve => setTimeout(resolve, 100));
         }
       } while (cursor !== '0');
-      
+
       return totalDeleted;
     } catch (err) {
       console.error('Redis clear (pattern) error:', err);
@@ -408,10 +382,7 @@ export class RedisCache {
    */
   async ping(): Promise<boolean> {
     try {
-      const result = await this.withRetry(
-        () => this.client.ping(),
-        'PING'
-      );
+      const result = await this.withRetry(() => this.client.ping(), 'PING');
       return result === 'PONG';
     } catch (err) {
       console.error('Redis PING error:', err);
@@ -429,7 +400,7 @@ export class RedisCache {
         this.client.scard(this.indexSetKey).then(Number),
         this.client.scard(this.ttlIndexSetKey).then(Number),
       ]);
-      
+
       return { permanentKeys, ttlKeys };
     } catch (err) {
       console.error('Redis getStats error:', err);
