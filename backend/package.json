@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "description": "Backend API for TechMap France",
   "main": "dist/server.js",
-  "type": "module",
   "scripts": {
     "dev": "nodemon --exec ts-node src/server.ts",
     "build": "tsc",
