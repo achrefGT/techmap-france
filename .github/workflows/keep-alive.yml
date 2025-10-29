@@ -1,0 +1,20 @@
+name: Keep Backend Awake
+
+on:
+  schedule:
+    - cron: '*/25 * * * *'  # Every 25 minutes
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" ${{ secrets.API_URL }}/health)
+          echo "Backend responded with status: $response"
+          if [ $response -eq 200 ]; then
+            echo "✅ Backend is awake"
+          else
+            echo "⚠️ Backend returned status $response"
+          fi
