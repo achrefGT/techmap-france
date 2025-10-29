@@ -6,8 +6,8 @@ jest.mock('@upstash/redis');
 
 describe('RedisCache', () => {
   let mockRedisInstance: jest.Mocked<Redis>;
-  let RedisCache: any;
-  let cache: any;
+  let RedisCache: typeof import('./RedisCache').RedisCache;
+  let cache: import('./RedisCache').RedisCache;
 
   beforeEach(async () => {
     // Clear all mocks
@@ -35,7 +35,7 @@ describe('RedisCache', () => {
       scard: jest.fn(),
       scan: jest.fn(),
       ping: jest.fn(),
-    } as any;
+    } as unknown as jest.Mocked<Redis>;
 
     // Mock Redis constructor
     (Redis as jest.MockedClass<typeof Redis>).mockImplementation(() => mockRedisInstance);
@@ -51,22 +51,22 @@ describe('RedisCache', () => {
   });
 
   describe('constructor', () => {
-    it('should throw error if UPSTASH_REDIS_REST_URL is missing', () => {
+    it('should throw error if UPSTASH_REDIS_REST_URL is missing', async () => {
       delete process.env.UPSTASH_REDIS_REST_URL;
       jest.resetModules();
       
-      expect(() => {
-        require('../infrastructure/cache/RedisCache');
-      }).toThrow('Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN');
+      await expect(async () => {
+        await import('./RedisCache');
+      }).rejects.toThrow('Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN');
     });
 
-    it('should throw error if UPSTASH_REDIS_REST_TOKEN is missing', () => {
+    it('should throw error if UPSTASH_REDIS_REST_TOKEN is missing', async () => {
       delete process.env.UPSTASH_REDIS_REST_TOKEN;
       jest.resetModules();
       
-      expect(() => {
-        require('../infrastructure/cache/RedisCache');
-      }).toThrow('Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN');
+      await expect(async () => {
+        await import('./RedisCache');
+      }).rejects.toThrow('Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN');
     });
 
     it('should create Redis client with correct config', () => {
@@ -235,7 +235,7 @@ describe('RedisCache', () => {
     });
 
     it('should return true if key exists (string response)', async () => {
-      mockRedisInstance.exists.mockResolvedValue('1' as any);
+      mockRedisInstance.exists.mockResolvedValue('1' as unknown as number);
 
       const result = await cache.exists('test-key');
 

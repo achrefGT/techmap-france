@@ -7,6 +7,11 @@ if (!URL || !TOKEN) {
   throw new Error('Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN');
 }
 
+interface RetryableError {
+  status?: number;
+  message?: string;
+}
+
 /**
  * Redis cache wrapper for Upstash
  * 
@@ -54,18 +59,19 @@ export class RedisCache {
     operation: () => Promise<T>,
     operationName: string = 'operation'
   ): Promise<T> {
-    let lastError: any;
+    let lastError: unknown;
     
     for (let attempt = 0; attempt <= this.MAX_RETRIES; attempt++) {
       try {
         return await operation();
-      } catch (err: any) {
+      } catch (err: unknown) {
         lastError = err;
         
         // Check if it's a rate limit error (429 or similar)
-        const isRateLimit = err?.status === 429 || 
-                           err?.message?.includes('rate limit') ||
-                           err?.message?.includes('too many requests');
+        const error = err as RetryableError;
+        const isRateLimit = error?.status === 429 || 
+                           error?.message?.includes('rate limit') ||
+                           error?.message?.includes('too many requests');
         
         if (isRateLimit && attempt < this.MAX_RETRIES) {
           const delay = Math.min(this.INITIAL_RETRY_DELAY * Math.pow(2, attempt), 3000);
@@ -138,7 +144,7 @@ export class RedisCache {
    * Set a key with optional TTL
    * Note: Index tracking may fail silently if setex succeeds but sadd fails
    */
-  async set(key: string, value: any, ttlSeconds?: number): Promise<boolean> {
+  async set(key: string, value: unknown, ttlSeconds?: number): Promise<boolean> {
     const payload = typeof value === 'string' ? value : JSON.stringify(value);
     
     try {
