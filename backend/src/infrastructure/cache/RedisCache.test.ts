@@ -21,7 +21,7 @@ const mockRedisInstance = {
 
 // Mock the @upstash/redis module
 jest.mock('@upstash/redis', () => ({
-  Redis: jest.fn(() => mockRedisInstance)
+  Redis: jest.fn(() => mockRedisInstance),
 }));
 
 describe('RedisCache', () => {
@@ -41,10 +41,10 @@ describe('RedisCache', () => {
     // Import the modules
     const redisModule = await import('@upstash/redis');
     Redis = redisModule.Redis;
-    
+
     const redisCacheModule = await import('./RedisCache');
     RedisCache = redisCacheModule.RedisCache;
-    
+
     // Create a new cache instance
     cache = new RedisCache();
   });
@@ -59,13 +59,15 @@ describe('RedisCache', () => {
       // Store original value
       const originalUrl = process.env.UPSTASH_REDIS_REST_URL;
       delete process.env.UPSTASH_REDIS_REST_URL;
-      
+
       // Need to re-import after changing env vars
       jest.resetModules();
-      
+
       // The module throws at import time, not at construction time
-      await expect(import('./RedisCache')).rejects.toThrow('Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN');
-      
+      await expect(import('./RedisCache')).rejects.toThrow(
+        'Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN'
+      );
+
       // Restore for cleanup
       process.env.UPSTASH_REDIS_REST_URL = originalUrl;
     });
@@ -74,13 +76,15 @@ describe('RedisCache', () => {
       // Store original value
       const originalToken = process.env.UPSTASH_REDIS_REST_TOKEN;
       delete process.env.UPSTASH_REDIS_REST_TOKEN;
-      
+
       // Need to re-import after changing env vars
       jest.resetModules();
-      
+
       // The module throws at import time, not at construction time
-      await expect(import('./RedisCache')).rejects.toThrow('Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN');
-      
+      await expect(import('./RedisCache')).rejects.toThrow(
+        'Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN'
+      );
+
       // Restore for cleanup
       process.env.UPSTASH_REDIS_REST_TOKEN = originalToken;
     });
@@ -438,7 +442,7 @@ describe('RedisCache', () => {
       // But it's also called for the index sets themselves
       // Check that del was called at least 3 times for the batched keys
       expect(mockRedisInstance.del.mock.calls.length).toBeGreaterThanOrEqual(3);
-      
+
       // Verify batching by checking individual calls had multiple keys
       const batchedCalls = mockRedisInstance.del.mock.calls.filter(call => call.length > 1);
       expect(batchedCalls.length).toBeGreaterThanOrEqual(3);
