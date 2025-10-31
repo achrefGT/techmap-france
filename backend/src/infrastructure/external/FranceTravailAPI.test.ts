@@ -112,25 +112,37 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
     });
 
     it('should clear token on 401 authentication error during job fetch', async () => {
-      mockedAxios.get.mockRejectedValue({
+      // FIXED: First call fails with 401, token refresh succeeds, retry succeeds
+      const authError = {
         isAxiosError: true,
         response: { status: 401, data: 'Unauthorized' },
         message: '401 error',
-      });
+      };
 
       (mockedAxios.isAxiosError as unknown as jest.Mock).mockReturnValue(true);
+
+      // First GET fails with 401
+      mockedAxios.get.mockRejectedValueOnce(authError);
+
+      // Token refresh succeeds (second POST call)
+      mockedAxios.post.mockResolvedValueOnce({
+        data: {
+          access_token: 'new-token',
+          expires_in: 3600,
+        },
+      });
+
+      // Retry GET succeeds
+      mockedAxios.get.mockResolvedValueOnce({ data: { resultats: [] } });
 
       const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
       await api.fetchJobs();
 
-      // Token should be cleared
-      // Next call should try to get a new token
-      mockedAxios.get.mockResolvedValue({ data: { resultats: [] } });
-      await api.fetchJobs();
-
-      // Should have called token endpoint twice (initial + after clearing)
+      // Should have called token endpoint twice (initial + after 401)
       expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+      // Should have called GET twice (initial fail + retry)
+      expect(mockedAxios.get).toHaveBeenCalledTimes(2);
 
       consoleErrorSpy.mockRestore();
     });
@@ -308,9 +320,14 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
     });
 
     it('should retry on 429 rate limit with longer backoff', async () => {
+      // FIXED: Mock headers properly
       const rateLimitError = {
         isAxiosError: true,
-        response: { status: 429, data: 'Rate limit exceeded' },
+        response: {
+          status: 429,
+          data: 'Rate limit exceeded',
+          headers: {}, // Add empty headers
+        },
         message: '429 error',
       };
 
@@ -373,9 +390,14 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
     });
 
     it('should show specific error message for 429 after max retries', async () => {
+      // FIXED: Mock headers properly
       const rateLimitError = {
         isAxiosError: true,
-        response: { status: 429, data: 'Rate limit exceeded' },
+        response: {
+          status: 429,
+          data: 'Rate limit exceeded',
+          headers: {}, // Add empty headers
+        },
         message: '429 error',
       };
 
