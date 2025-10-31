@@ -1,4 +1,3 @@
-// backend/src/infrastructure/database/connection.test.ts
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 
 // Create mock before importing pg
