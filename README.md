@@ -11,4 +11,3 @@ Visual analytics platform showing real-time technology demand across French regi
 - Backend: Node.js + Express + TypeScript
 - Database: PostgreSQL (Supabase)
 - Cache: Redis (Upstash)
-
