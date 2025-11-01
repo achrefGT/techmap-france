@@ -12,6 +12,3 @@ Visual analytics platform showing real-time technology demand across French regi
 - Database: PostgreSQL (Supabase)
 - Cache: Redis (Upstash)
 
-## Project Structure
-
-See `/docs/ARCHITECTURE.md` for detailed architecture documentation.
