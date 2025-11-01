@@ -1,0 +1,15 @@
+export const VALID_REGION_CODES = new Set([
+  'IDF',
+  'ARA',
+  'NAQ',
+  'OCC',
+  'HDF',
+  'PAC',
+  'GES',
+  'PDL',
+  'BRE',
+  'NOR',
+  'BFC',
+  'CVL',
+  'COR',
+]);

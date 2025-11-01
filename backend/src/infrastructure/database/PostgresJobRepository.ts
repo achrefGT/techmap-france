@@ -1,5 +1,6 @@
 import { IJobRepository, JobFilters } from '../../domain/repositories/IJobRepository';
 import { Job } from '../../domain/entities/Job';
+import { ExperienceLevel } from '../../domain/constants/JobConfig';
 import { query } from './connection';
 
 export class PostgresJobRepository implements IJobRepository {
@@ -37,11 +38,13 @@ export class PostgresJobRepository implements IJobRepository {
   async save(job: Job): Promise<void> {
     const sql = `
       INSERT INTO jobs (id, title, company, description, location_raw, region_id, 
-        is_remote, salary_min, salary_max, experience_level, source_api, source_url, posted_date)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        is_remote, salary_min, salary_max, experience_level, experience_category,
+        source_api, external_id, source_url, posted_date, source_apis)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
       ON CONFLICT (id) DO UPDATE SET
         is_active = true,
-        fetched_at = NOW()
+        fetched_at = NOW(),
+        source_apis = EXCLUDED.source_apis
     `;
 
     await query(sql, [
@@ -52,12 +55,15 @@ export class PostgresJobRepository implements IJobRepository {
       job.location,
       job.regionId,
       job.isRemote,
-      job.salaryMin,
-      job.salaryMax,
+      job.salaryMinKEuros,
+      job.salaryMaxKEuros,
       job.experienceLevel,
+      job.experienceCategory,
       job.sourceApi,
+      job.externalId,
       job.sourceUrl,
       job.postedDate,
+      job.sourceApis,
     ]);
 
     if (job.technologies.length > 0) {
@@ -71,8 +77,8 @@ export class PostgresJobRepository implements IJobRepository {
     // Batch insert jobs
     const jobValues = jobs
       .map((_, i) => {
-        const base = i * 13;
-        return `(${base + 1}, ${base + 2}, ${base + 3}, ${base + 4}, ${base + 5}, ${base + 6}, ${base + 7}, ${base + 8}, ${base + 9}, ${base + 10}, ${base + 11}, ${base + 12}, ${base + 13})`;
+        const base = i * 16;
+        return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11}, $${base + 12}, $${base + 13}, $${base + 14}, $${base + 15}, $${base + 16})`;
       })
       .join(',');
 
@@ -84,19 +90,26 @@ export class PostgresJobRepository implements IJobRepository {
       job.location,
       job.regionId,
       job.isRemote,
-      job.salaryMin,
-      job.salaryMax,
+      job.salaryMinKEuros,
+      job.salaryMaxKEuros,
       job.experienceLevel,
+      job.experienceCategory,
       job.sourceApi,
+      job.externalId,
       job.sourceUrl,
       job.postedDate,
+      job.sourceApis,
     ]);
 
     const jobSql = `
       INSERT INTO jobs (id, title, company, description, location_raw, region_id,
-        is_remote, salary_min, salary_max, experience_level, source_api, source_url, posted_date)
+        is_remote, salary_min, salary_max, experience_level, experience_category,
+        source_api, external_id, source_url, posted_date, source_apis)
       VALUES ${jobValues}
-      ON CONFLICT (id) DO UPDATE SET is_active = true, fetched_at = NOW()
+      ON CONFLICT (id) DO UPDATE SET 
+        is_active = true, 
+        fetched_at = NOW(),
+        source_apis = EXCLUDED.source_apis
     `;
 
     await query(jobSql, jobParams);
@@ -238,7 +251,7 @@ export class PostgresJobRepository implements IJobRepository {
       .filter(item => techMap.has(item.tech))
       .map((_, i) => {
         const base = i * 2;
-        return `(${base + 1}, ${base + 2})`;
+        return `($${base + 1}, $${base + 2})`;
       })
       .join(',');
 
@@ -265,10 +278,15 @@ export class PostgresJobRepository implements IJobRepository {
       row.salary_min,
       row.salary_max,
       row.experience_level,
+      (row.experience_category as ExperienceLevel) || 'unknown',
       row.source_api,
+      row.external_id,
       row.source_url,
       new Date(row.posted_date),
-      row.is_active
+      row.is_active,
+      row.created_at ? new Date(row.created_at) : new Date(),
+      row.updated_at ? new Date(row.updated_at) : new Date(),
+      row.source_apis || [row.source_api]
     );
   }
 }

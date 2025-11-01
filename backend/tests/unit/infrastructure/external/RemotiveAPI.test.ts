@@ -1,10 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import axios from 'axios';
-import { RemotiveAPI } from './RemotiveAPI';
+import { RemotiveAPI } from '../../../../src/infrastructure/external/RemotiveAPI';
 
 jest.mock('axios');
-jest.mock('./TechnologyDetector', () => ({
+jest.mock('../../../../src/infrastructure/external/TechnologyDetector', () => ({
   techDetector: {
     detect: jest.fn().mockReturnValue(['Go', 'Docker']),
   },
@@ -34,9 +34,9 @@ describe('RemotiveAPI - Extended Tests', () => {
           jobs: [
             {
               id: 1,
-              title: 'Developer',
-              company_name: 'Company',
-              description: 'Job description',
+              title: 'Senior Go Developer',
+              company_name: 'TechCorp',
+              description: 'Build scalable microservices with Go and Docker',
               url: 'https://remotive.com/job/1',
               publication_date: '2024-01-15T10:00:00Z',
             },
@@ -74,9 +74,9 @@ describe('RemotiveAPI - Extended Tests', () => {
           jobs: [
             {
               id: 2,
-              title: 'Developer',
-              company_name: 'Company',
-              description: 'Job description',
+              title: 'Backend Developer',
+              company_name: 'StartupXYZ',
+              description: 'Work with Go microservices',
               url: 'https://remotive.com/job/2',
               publication_date: '2024-01-15T10:00:00Z',
             },
@@ -170,7 +170,7 @@ describe('RemotiveAPI - Extended Tests', () => {
               // Missing ID
               title: 'Developer',
               company_name: 'Company',
-              description: 'Job description',
+              description: 'Job description with Go and Docker',
               url: 'https://remotive.com/job/123',
               publication_date: '2024-01-15T10:00:00Z',
             },
@@ -180,18 +180,56 @@ describe('RemotiveAPI - Extended Tests', () => {
 
       mockedAxios.get.mockResolvedValue(mockResponse);
 
-      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
       const jobs = await api.fetchJobs(50);
 
       expect(jobs).toEqual([]); // Bad record filtered out
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Error mapping'),
-        expect.anything(),
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Skipping job without ID'),
         expect.anything()
       );
 
-      consoleErrorSpy.mockRestore();
+      consoleWarnSpy.mockRestore();
+    });
+
+    it('should skip jobs with no detected technologies', async () => {
+      const mockResponse = {
+        data: {
+          jobs: [
+            {
+              id: 123,
+              title: 'Generic Position',
+              company_name: 'Company',
+              description: 'Very vague description',
+              url: 'https://remotive.com/job/123',
+              publication_date: '2024-01-15T10:00:00Z',
+            },
+          ],
+        },
+      };
+
+      // Mock techDetector to return empty array for this test
+      const {
+        techDetector,
+      } = require('../../../../src/infrastructure/external/TechnologyDetector');
+      (techDetector.detect as jest.Mock).mockReturnValueOnce([]);
+
+      mockedAxios.get.mockResolvedValue(mockResponse);
+
+      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const jobs = await api.fetchJobs(50);
+
+      expect(jobs).toEqual([]);
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('No technologies detected')
+      );
+
+      consoleWarnSpy.mockRestore();
+
+      // Restore mock
+      (techDetector.detect as jest.Mock).mockReturnValue(['Go', 'Docker']);
     });
 
     it('should handle invalid publication_date', async () => {
@@ -202,7 +240,7 @@ describe('RemotiveAPI - Extended Tests', () => {
               id: 123,
               title: 'Developer',
               company_name: 'Company',
-              description: 'Job description',
+              description: 'Job description with Go',
               url: 'https://remotive.com/job/123',
               publication_date: 'invalid-date',
             },
@@ -220,6 +258,35 @@ describe('RemotiveAPI - Extended Tests', () => {
       expect(jobs[0].postedDate.getTime()).toBeGreaterThan(Date.now() - 5000);
     });
 
+    it('should handle future publication_date', async () => {
+      const futureDate = new Date();
+      futureDate.setFullYear(futureDate.getFullYear() + 1);
+
+      const mockResponse = {
+        data: {
+          jobs: [
+            {
+              id: 456,
+              title: 'Developer',
+              company_name: 'Company',
+              description: 'Job description with Docker',
+              url: 'https://remotive.com/job/456',
+              publication_date: futureDate.toISOString(),
+            },
+          ],
+        },
+      };
+
+      mockedAxios.get.mockResolvedValue(mockResponse);
+
+      const jobs = await api.fetchJobs(50);
+
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].postedDate).toBeInstanceOf(Date);
+      // Should fallback to current date
+      expect(jobs[0].postedDate.getTime()).toBeLessThanOrEqual(Date.now());
+    });
+
     it('should handle missing publication_date', async () => {
       const mockResponse = {
         data: {
@@ -228,7 +295,7 @@ describe('RemotiveAPI - Extended Tests', () => {
               id: 456,
               title: 'Developer',
               company_name: 'Company',
-              description: 'Job description',
+              description: 'Job description with Go',
               url: 'https://remotive.com/job/456',
               // Missing publication_date
             },
@@ -252,7 +319,7 @@ describe('RemotiveAPI - Extended Tests', () => {
               id: 789,
               title: 'Developer',
               company_name: 'Company',
-              description: 'Job description',
+              description: 'Job description with Docker',
               // Missing URL - implementation provides fallback
               publication_date: '2024-01-15T10:00:00Z',
             },
@@ -265,8 +332,8 @@ describe('RemotiveAPI - Extended Tests', () => {
       const jobs = await api.fetchJobs(50);
 
       expect(jobs).toHaveLength(1);
-      expect(jobs[0].id).toBe('remotive-789');
-      // URL fallback is provided internally, job maps successfully
+      expect(jobs[0].externalId).toBe('remotive-789');
+      expect(jobs[0].sourceUrl).toBe('https://remotive.com/remote-jobs/789');
     });
 
     it('should handle mixed valid and invalid jobs', async () => {
@@ -278,7 +345,7 @@ describe('RemotiveAPI - Extended Tests', () => {
               id: 1,
               title: 'Developer 1',
               company_name: 'Company',
-              description: 'Job description',
+              description: 'Job description with Go',
               url: 'https://remotive.com/job/1',
               publication_date: '2024-01-15T10:00:00Z',
             },
@@ -286,14 +353,14 @@ describe('RemotiveAPI - Extended Tests', () => {
               // Invalid job - missing ID
               title: 'Developer 2',
               company_name: 'Company',
-              description: 'Job description',
+              description: 'Job description with Docker',
             },
             {
               // Valid job
               id: 3,
               title: 'Developer 3',
               company_name: 'Company',
-              description: 'Job description',
+              description: 'Job description with Go',
               url: 'https://remotive.com/job/3',
               publication_date: '2024-01-15T10:00:00Z',
             },
@@ -303,15 +370,80 @@ describe('RemotiveAPI - Extended Tests', () => {
 
       mockedAxios.get.mockResolvedValue(mockResponse);
 
-      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
       const jobs = await api.fetchJobs(50);
 
       expect(jobs).toHaveLength(2); // Only valid jobs
-      expect(jobs[0].id).toBe('remotive-1');
-      expect(jobs[1].id).toBe('remotive-3');
+      expect(jobs[0].externalId).toBe('remotive-1');
+      expect(jobs[1].externalId).toBe('remotive-3');
 
-      consoleErrorSpy.mockRestore();
+      consoleWarnSpy.mockRestore();
+    });
+  });
+
+  describe('DTO structure', () => {
+    it('should return DTOs with correct structure', async () => {
+      const mockResponse = {
+        data: {
+          jobs: [
+            {
+              id: 123,
+              title: 'Senior Backend Developer',
+              company_name: 'TechCorp',
+              description: 'Work with Go and Docker on microservices',
+              candidate_required_location: 'Worldwide',
+              salary: '$80k - $120k',
+              url: 'https://remotive.com/job/123',
+              publication_date: '2024-01-15T10:00:00Z',
+            },
+          ],
+        },
+      };
+
+      mockedAxios.get.mockResolvedValue(mockResponse);
+
+      const jobs = await api.fetchJobs(50);
+
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]).toEqual({
+        externalId: 'remotive-123',
+        title: 'Senior Backend Developer',
+        company: 'TechCorp',
+        description: 'Work with Go and Docker on microservices',
+        technologies: ['Go', 'Docker'],
+        location: 'Worldwide',
+        salaryMinKEuros: 80,
+        salaryMaxKEuros: 120,
+        experienceLevel: null, // Not detected by API
+        sourceUrl: 'https://remotive.com/job/123',
+        postedDate: expect.any(Date),
+      });
+    });
+
+    it('should set experienceLevel to null (domain responsibility)', async () => {
+      const mockResponse = {
+        data: {
+          jobs: [
+            {
+              id: 456,
+              title: 'Senior Developer', // Has "senior" in title
+              company_name: 'Company',
+              description: '5+ years of experience required',
+              url: 'https://remotive.com/job/456',
+              publication_date: '2024-01-15T10:00:00Z',
+            },
+          ],
+        },
+      };
+
+      mockedAxios.get.mockResolvedValue(mockResponse);
+
+      const jobs = await api.fetchJobs(50);
+
+      expect(jobs).toHaveLength(1);
+      // API should NOT detect experience level - that's the Job entity's responsibility
+      expect(jobs[0].experienceLevel).toBeNull();
     });
   });
 
@@ -398,6 +530,110 @@ describe('RemotiveAPI - Extended Tests', () => {
   });
 
   describe('salary parsing edge cases', () => {
+    it('should parse salary range with dollar signs', async () => {
+      const mockResponse = {
+        data: {
+          jobs: [
+            {
+              id: 100,
+              title: 'Developer',
+              company_name: 'Company',
+              description: 'Job with Go',
+              salary: '$50,000 - $70,000',
+              url: 'https://remotive.com/job/100',
+              publication_date: '2024-01-15T10:00:00Z',
+            },
+          ],
+        },
+      };
+
+      mockedAxios.get.mockResolvedValue(mockResponse);
+
+      const jobs = await api.fetchJobs(50);
+
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].salaryMinKEuros).toBe(50);
+      expect(jobs[0].salaryMaxKEuros).toBe(70);
+    });
+
+    it('should parse salary range with k suffix', async () => {
+      const mockResponse = {
+        data: {
+          jobs: [
+            {
+              id: 101,
+              title: 'Developer',
+              company_name: 'Company',
+              description: 'Job with Docker',
+              salary: '$60k - $90k',
+              url: 'https://remotive.com/job/101',
+              publication_date: '2024-01-15T10:00:00Z',
+            },
+          ],
+        },
+      };
+
+      mockedAxios.get.mockResolvedValue(mockResponse);
+
+      const jobs = await api.fetchJobs(50);
+
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].salaryMinKEuros).toBe(60);
+      expect(jobs[0].salaryMaxKEuros).toBe(90);
+    });
+
+    it('should parse salary range with euro symbols', async () => {
+      const mockResponse = {
+        data: {
+          jobs: [
+            {
+              id: 102,
+              title: 'Developer',
+              company_name: 'Company',
+              description: 'Job with Go',
+              salary: '€50k - €80k',
+              url: 'https://remotive.com/job/102',
+              publication_date: '2024-01-15T10:00:00Z',
+            },
+          ],
+        },
+      };
+
+      mockedAxios.get.mockResolvedValue(mockResponse);
+
+      const jobs = await api.fetchJobs(50);
+
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].salaryMinKEuros).toBe(50);
+      expect(jobs[0].salaryMaxKEuros).toBe(80);
+    });
+
+    it('should parse single salary value', async () => {
+      const mockResponse = {
+        data: {
+          jobs: [
+            {
+              id: 103,
+              title: 'Developer',
+              company_name: 'Company',
+              description: 'Job with Docker',
+              salary: '$75,000',
+              url: 'https://remotive.com/job/103',
+              publication_date: '2024-01-15T10:00:00Z',
+            },
+          ],
+        },
+      };
+
+      mockedAxios.get.mockResolvedValue(mockResponse);
+
+      const jobs = await api.fetchJobs(50);
+
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].salaryMinKEuros).toBe(75);
+      expect(jobs[0].salaryMaxKEuros).toBe(75);
+    });
+
     it('should handle invalid salary string gracefully', async () => {
       const mockResponse = {
         data: {
@@ -406,7 +642,7 @@ describe('RemotiveAPI - Extended Tests', () => {
               id: 999,
               title: 'Developer',
               company_name: 'Company',
-              description: 'Job description',
+              description: 'Job with Go',
               salary: 'Competitive', // Not parseable
               url: 'https://remotive.com/job/999',
               publication_date: '2024-01-15T10:00:00Z',
@@ -420,8 +656,8 @@ describe('RemotiveAPI - Extended Tests', () => {
       const jobs = await api.fetchJobs(50);
 
       expect(jobs).toHaveLength(1);
-      expect(jobs[0].salaryMin).toBeNull();
-      expect(jobs[0].salaryMax).toBeNull();
+      expect(jobs[0].salaryMinKEuros).toBeNull();
+      expect(jobs[0].salaryMaxKEuros).toBeNull();
     });
 
     it('should handle null salary string', async () => {
@@ -432,7 +668,7 @@ describe('RemotiveAPI - Extended Tests', () => {
               id: 1000,
               title: 'Developer',
               company_name: 'Company',
-              description: 'Job description',
+              description: 'Job with Docker',
               salary: null,
               url: 'https://remotive.com/job/1000',
               publication_date: '2024-01-15T10:00:00Z',
@@ -446,8 +682,8 @@ describe('RemotiveAPI - Extended Tests', () => {
       const jobs = await api.fetchJobs(50);
 
       expect(jobs).toHaveLength(1);
-      expect(jobs[0].salaryMin).toBeNull();
-      expect(jobs[0].salaryMax).toBeNull();
+      expect(jobs[0].salaryMinKEuros).toBeNull();
+      expect(jobs[0].salaryMaxKEuros).toBeNull();
     });
 
     it('should handle non-string salary value', async () => {
@@ -458,7 +694,7 @@ describe('RemotiveAPI - Extended Tests', () => {
               id: 1001,
               title: 'Developer',
               company_name: 'Company',
-              description: 'Job description',
+              description: 'Job with Go',
               salary: 123456, // Number instead of string
               url: 'https://remotive.com/job/1001',
               publication_date: '2024-01-15T10:00:00Z',
@@ -472,8 +708,45 @@ describe('RemotiveAPI - Extended Tests', () => {
       const jobs = await api.fetchJobs(50);
 
       expect(jobs).toHaveLength(1);
-      expect(jobs[0].salaryMin).toBeNull();
-      expect(jobs[0].salaryMax).toBeNull();
+      expect(jobs[0].salaryMinKEuros).toBeNull();
+      expect(jobs[0].salaryMaxKEuros).toBeNull();
+    });
+
+    it('should reject invalid salary range (min > max)', async () => {
+      const mockResponse = {
+        data: {
+          jobs: [
+            {
+              id: 1002,
+              title: 'Developer',
+              company_name: 'Company',
+              description: 'Job with Docker',
+              salary: '$100k - $50k', // Invalid range
+              url: 'https://remotive.com/job/1002',
+              publication_date: '2024-01-15T10:00:00Z',
+            },
+          ],
+        },
+      };
+
+      mockedAxios.get.mockResolvedValue(mockResponse);
+
+      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const jobs = await api.fetchJobs(50);
+
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].salaryMinKEuros).toBeNull();
+      expect(jobs[0].salaryMaxKEuros).toBeNull();
+      expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining('Invalid salary range'));
+
+      consoleWarnSpy.mockRestore();
+    });
+  });
+
+  describe('getSourceName', () => {
+    it('should return the correct source name', () => {
+      expect(api.getSourceName()).toBe('remotive');
     });
   });
 });

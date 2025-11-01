@@ -1,5 +1,4 @@
 import axios, { AxiosError } from 'axios';
-import { Job } from '../../domain/entities/Job';
 import { techDetector } from './TechnologyDetector';
 
 interface FranceTravailSearchParams {
@@ -7,12 +6,12 @@ interface FranceTravailSearchParams {
   commune?: string;
   departement?: string;
   codeROME?: string;
-  typeContrat?: string; // CDI, CDD, MIS, etc.
-  nature?: string; // Offre d'emploi, Alternance
-  experience?: string; // 1 = Débutant accepté, 2 = Expérience exigée, 3 = Expérience souhaitée
+  typeContrat?: string;
+  nature?: string;
+  experience?: string;
   tempsPlein?: boolean;
-  range?: string; // Format: "0-99" (max 150 per request) - NOTE: Only used if NOT paginating
-  maxResults?: number; // Total max results to fetch across pages
+  range?: string;
+  maxResults?: number;
 }
 
 interface FranceTravailJobResponse {
@@ -34,6 +33,25 @@ interface FranceTravailJobResponse {
   };
 }
 
+/**
+ * DTO for job data from France Travail API
+ * This represents raw data before domain entity creation
+ */
+export interface FranceTravailJobDTO {
+  externalId: string;
+  title: string;
+  company: string;
+  description: string;
+  technologies: string[];
+  location: string;
+  regionId: number | null;
+  salaryMinKEuros: number | null;
+  salaryMaxKEuros: number | null;
+  experienceLevel: null; // Always null - domain layer responsibility
+  sourceUrl: string;
+  postedDate: Date;
+}
+
 interface FranceTravailConfig {
   maxRetryAttempts?: number;
   retryDelayMs?: number;
@@ -44,12 +62,20 @@ interface FranceTravailConfig {
   circuitBreakerResetTimeMs?: number;
 }
 
+/**
+ * Optional region repository interface for region lookups
+ */
+interface RegionRepository {
+  findByCode(code: string): Promise<number | null>;
+}
+
 export class FranceTravailAPI {
   private tokenUrl =
     'https://entreprise.francetravail.fr/connexion/oauth2/access_token?realm=%2Fpartenaire';
   private apiUrl = 'https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search';
   private token: string | null = null;
   private tokenExpiry: number = 0;
+  private readonly SOURCE_NAME = 'france_travail';
 
   private readonly MAX_RESULTS_PER_REQUEST = 150;
   private readonly MAX_RETRY_ATTEMPTS: number;
@@ -64,7 +90,7 @@ export class FranceTravailAPI {
   private circuitBreakerFailures: number = 0;
   private circuitBreakerOpenUntil: number = 0;
 
-  // Region mapping: normalized department/region name -> region code
+  // Region mapping: department/postal code prefix -> region code
   private regionCodeMapping: Map<string, string> = new Map([
     // Île-de-France
     ['75', 'IDF'],
@@ -202,12 +228,12 @@ export class FranceTravailAPI {
     ['2a', 'COR'],
     ['2b', 'COR'],
     ['corse', 'COR'],
-    // Overseas departments (DOM-TOM) - 3 digit codes
-    ['971', 'GLP'], // Guadeloupe
-    ['972', 'MTQ'], // Martinique
-    ['973', 'GUF'], // Guyane
-    ['974', 'REU'], // Réunion
-    ['976', 'MYT'], // Mayotte
+    // Overseas departments
+    ['971', 'GLP'],
+    ['972', 'MTQ'],
+    ['973', 'GUF'],
+    ['974', 'REU'],
+    ['976', 'MYT'],
   ]);
 
   private regionIdCache: Map<string, number> = new Map();
@@ -215,51 +241,43 @@ export class FranceTravailAPI {
   constructor(
     private clientId: string,
     private clientSecret: string,
-    private regionRepository?: { findByCode(code: string): Promise<number | null> },
+    private regionRepository?: RegionRepository,
     config?: FranceTravailConfig
   ) {
     if (!clientId || !clientSecret) {
       throw new Error('France Travail API credentials (clientId and clientSecret) are required');
     }
 
-    // Apply configuration with safer defaults
     this.MAX_RETRY_ATTEMPTS = config?.maxRetryAttempts ?? 3;
     this.RETRY_DELAY_MS = config?.retryDelayMs ?? 1000;
-    this.REQUEST_DELAY_MS = config?.requestDelayMs ?? 150; // Safer default: ~6.6 req/s
+    this.REQUEST_DELAY_MS = config?.requestDelayMs ?? 150;
     this.DEFAULT_MAX_RESULTS = config?.defaultMaxResults ?? 150;
 
-    // Circuit breaker configuration
     this.ENABLE_CIRCUIT_BREAKER = config?.enableCircuitBreaker ?? true;
     this.CIRCUIT_BREAKER_THRESHOLD = config?.circuitBreakerThreshold ?? 5;
-    this.CIRCUIT_BREAKER_RESET_TIME_MS = config?.circuitBreakerResetTimeMs ?? 60000; // 1 minute
+    this.CIRCUIT_BREAKER_RESET_TIME_MS = config?.circuitBreakerResetTimeMs ?? 60000;
   }
 
   /**
    * Fetch jobs with automatic pagination support
-   *
-   * IMPORTANT: France Travail API has rate limits (~10 calls/second).
-   * This implementation respects rate limits with automatic delays.
+   * Returns DTOs, not domain entities
    */
-  async fetchJobs(params: FranceTravailSearchParams = {}): Promise<Job[]> {
-    // Check circuit breaker
+  async fetchJobs(params: FranceTravailSearchParams = {}): Promise<FranceTravailJobDTO[]> {
     if (this.isCircuitBreakerOpen()) {
       console.warn('Circuit breaker is open - refusing request to prevent cascading failures');
       return [];
     }
 
-    // If caller specified an exact range, don't paginate - fetch that range only
     if (params.range) {
       return this.fetchRange(params, params.range);
     }
 
-    // Otherwise, paginate to fetch maxResults
     const maxResults = params.maxResults || this.DEFAULT_MAX_RESULTS;
-    const allJobs: Job[] = [];
+    const allJobs: FranceTravailJobDTO[] = [];
 
     try {
       await this.ensureToken();
 
-      // Calculate how many requests we need
       const numRequests = Math.ceil(maxResults / this.MAX_RESULTS_PER_REQUEST);
 
       for (let i = 0; i < numRequests; i++) {
@@ -270,46 +288,39 @@ export class FranceTravailAPI {
         const jobs = await this.fetchRange(params, range);
 
         if (jobs.length === 0) {
-          // No more results available
           break;
         }
 
         allJobs.push(...jobs);
 
-        // Add delay between requests to respect rate limits (except on last request)
         if (i < numRequests - 1 && jobs.length > 0) {
           await this.delay(this.REQUEST_DELAY_MS);
         }
       }
 
-      // Success - reset circuit breaker
       this.recordSuccess();
 
       return allJobs;
     } catch (error) {
       console.error('France Travail API error:', error);
-      return allJobs; // Return any jobs we managed to fetch
+      return allJobs;
     }
   }
 
   /**
    * Fetch a single range of results with retry logic
-   * @param params Search parameters
-   * @param range Range to fetch (e.g., "0-149")
-   * @param attempt Current attempt number (for retry logic)
    */
   private async fetchRange(
     params: FranceTravailSearchParams,
     range: string,
     attempt: number = 1
-  ): Promise<Job[]> {
+  ): Promise<FranceTravailJobDTO[]> {
     try {
       const searchParams: Record<string, any> = {
         motsCles: params.motsCles || 'développeur',
-        range: range, // FIXED: Use explicit range parameter for pagination
+        range: range,
       };
 
-      // Add optional filters
       if (params.commune) searchParams.commune = params.commune;
       if (params.departement) searchParams.departement = params.departement;
       if (params.codeROME) searchParams.codeROME = params.codeROME;
@@ -328,9 +339,9 @@ export class FranceTravailAPI {
       });
 
       const jobs: FranceTravailJobResponse[] = response.data.resultats || [];
-      const mappedJobs = await Promise.all(jobs.map(job => this.mapToJobSafely(job)));
+      const mappedJobs = await Promise.all(jobs.map(job => this.mapToDTO(job)));
 
-      return mappedJobs.filter((job): job is Job => job !== null);
+      return mappedJobs.filter((dto): dto is FranceTravailJobDTO => dto !== null);
     } catch (error) {
       return this.handleRequestError(error, params, range, attempt);
     }
@@ -344,11 +355,10 @@ export class FranceTravailAPI {
     params: FranceTravailSearchParams,
     range: string,
     attempt: number
-  ): Promise<Job[]> {
+  ): Promise<FranceTravailJobDTO[]> {
     const isAxiosError = axios.isAxiosError(error);
     const axiosError = error as AxiosError;
 
-    // FIXED: Handle auth errors with token refresh and retry
     if (isAxiosError && axiosError.response) {
       const status = axiosError.response.status;
 
@@ -357,7 +367,6 @@ export class FranceTravailAPI {
           'France Travail API authentication error. Check credentials or token expired.',
           axiosError.response.data
         );
-        // Clear token to force refresh on next call
         this.token = null;
         this.tokenExpiry = 0;
 
@@ -376,7 +385,6 @@ export class FranceTravailAPI {
         }
       }
 
-      // Check for Retry-After header on 429 (rate limit)
       if (status === 429 && axiosError.response.headers) {
         const retryAfter = this.extractRetryAfter(axiosError.response.headers);
         if (retryAfter && attempt < this.MAX_RETRY_ATTEMPTS) {
@@ -389,7 +397,6 @@ export class FranceTravailAPI {
       }
     }
 
-    // Determine if we should retry
     const shouldRetry =
       attempt < this.MAX_RETRY_ATTEMPTS &&
       isAxiosError &&
@@ -400,7 +407,6 @@ export class FranceTravailAPI {
         axiosError.response?.status === 429);
 
     if (shouldRetry) {
-      // Exponential backoff, but extra delay for 429
       const isRateLimit = axiosError.response?.status === 429;
       const baseDelay = isRateLimit ? 5000 : this.RETRY_DELAY_MS;
       const backoffDelay = baseDelay * Math.pow(2, attempt - 1);
@@ -416,7 +422,6 @@ export class FranceTravailAPI {
       return this.fetchRange(params, range, attempt + 1);
     }
 
-    // Log the error with details
     if (isAxiosError) {
       if (axiosError.response) {
         const status = axiosError.response.status;
@@ -455,13 +460,11 @@ export class FranceTravailAPI {
     const retryAfter = headers['retry-after'] || headers['Retry-After'];
     if (!retryAfter) return null;
 
-    // Can be either seconds (number) or HTTP date
     const seconds = parseInt(retryAfter, 10);
     if (!isNaN(seconds)) {
       return seconds * 1000;
     }
 
-    // Try to parse as date
     try {
       const date = new Date(retryAfter);
       const delay = date.getTime() - Date.now();
@@ -472,7 +475,7 @@ export class FranceTravailAPI {
   }
 
   /**
-   * Ensure we have a valid token, with robust error handling
+   * Ensure we have a valid token
    */
   private async ensureToken(): Promise<void> {
     if (this.token && Date.now() < this.tokenExpiry) {
@@ -497,14 +500,12 @@ export class FranceTravailAPI {
         }
       );
 
-      // Validate response - check data first since that's what matters
       if (!response.data?.access_token) {
         throw new Error('Invalid token response: missing access_token');
       }
 
       this.token = response.data.access_token;
 
-      // Set expiry 10 seconds before actual expiry for safety margin
       const expiresIn = response.data.expires_in || 3600;
       this.tokenExpiry = Date.now() + expiresIn * 1000 - 10000;
     } catch (error) {
@@ -528,11 +529,65 @@ export class FranceTravailAPI {
   }
 
   /**
-   * Safely map raw job data with error handling
+   * Map raw API response to DTO with error handling
    */
-  private async mapToJobSafely(rawJob: FranceTravailJobResponse): Promise<Job | null> {
+  private async mapToDTO(rawJob: FranceTravailJobResponse): Promise<FranceTravailJobDTO | null> {
     try {
-      return await this.mapToJob(rawJob);
+      if (!rawJob.id) {
+        console.warn('Skipping job without ID:', rawJob);
+        return null;
+      }
+
+      const title = rawJob.intitule || 'Poste non spécifié';
+      const company = rawJob.entreprise?.nom || 'Non spécifié';
+      const description = rawJob.description || '';
+      const fullText = `${title} ${description}`;
+
+      // Detect technologies
+      const technologies = techDetector.detect(fullText);
+
+      // Validate minimum technology requirement
+      if (technologies.length === 0) {
+        console.warn(`Skipping job ${rawJob.id}: No technologies detected`);
+        return null;
+      }
+
+      // Extract region ID
+      const regionId = await this.extractRegionId(rawJob.lieuTravail);
+
+      // Extract salary in full euros, then convert to k€
+      const salaryMinEuros = this.extractSalary(rawJob.salaire?.libelle, 'min');
+      const salaryMaxEuros = this.extractSalary(rawJob.salaire?.libelle, 'max');
+      const salaryMinKEuros = salaryMinEuros ? Math.round(salaryMinEuros / 1000) : null;
+      const salaryMaxKEuros = salaryMaxEuros ? Math.round(salaryMaxEuros / 1000) : null;
+
+      // Handle date
+      let postedDate: Date;
+      try {
+        postedDate = rawJob.dateCreation ? new Date(rawJob.dateCreation) : new Date();
+        if (isNaN(postedDate.getTime()) || postedDate > new Date()) {
+          postedDate = new Date();
+        }
+      } catch {
+        postedDate = new Date();
+      }
+
+      return {
+        externalId: `francetravail-${rawJob.id}`,
+        title,
+        company,
+        description,
+        technologies,
+        location: rawJob.lieuTravail?.libelle || 'France',
+        regionId,
+        salaryMinKEuros,
+        salaryMaxKEuros,
+        experienceLevel: null, // Domain layer responsibility
+        sourceUrl:
+          rawJob.origineOffre?.urlOrigine ||
+          `https://candidat.francetravail.fr/offres/recherche/detail/${rawJob.id}`,
+        postedDate,
+      };
     } catch (error) {
       console.error('Error mapping France Travail job:', error, rawJob);
       return null;
@@ -540,100 +595,7 @@ export class FranceTravailAPI {
   }
 
   /**
-   * Map raw API response to Job entity
-   * NOTE: Salaries are stored in FULL EUROS (not thousands)
-   */
-  private async mapToJob(rawJob: FranceTravailJobResponse): Promise<Job> {
-    if (!rawJob.id) {
-      throw new Error('Job ID is required');
-    }
-
-    const title = rawJob.intitule || 'Poste non spécifié';
-    const description = rawJob.description || '';
-    const fullText = `${title} ${description}`;
-
-    const technologies = techDetector.detect(fullText);
-    const isRemote = this.detectRemote(rawJob);
-    const regionId = await this.extractRegionId(rawJob.lieuTravail);
-    const experienceLevel = this.mapExperienceLevel(rawJob.experienceLibelle, fullText);
-
-    // FIXED: Extract salary in FULL EUROS (not thousands)
-    const salaryMin = this.extractSalary(rawJob.salaire?.libelle, 'min');
-    const salaryMax = this.extractSalary(rawJob.salaire?.libelle, 'max');
-
-    // Handle potentially invalid date
-    let postedDate: Date;
-    try {
-      postedDate = rawJob.dateCreation ? new Date(rawJob.dateCreation) : new Date();
-
-      if (isNaN(postedDate.getTime())) {
-        postedDate = new Date();
-      }
-    } catch {
-      postedDate = new Date();
-    }
-
-    return new Job(
-      `francetravail-${rawJob.id}`,
-      title,
-      rawJob.entreprise?.nom || 'Non spécifié',
-      description,
-      technologies,
-      rawJob.lieuTravail?.libelle || 'France',
-      regionId,
-      isRemote,
-      salaryMin,
-      salaryMax,
-      experienceLevel,
-      'francetravail',
-      rawJob.origineOffre?.urlOrigine ||
-        `https://candidat.francetravail.fr/offres/recherche/detail/${rawJob.id}`,
-      postedDate,
-      true
-    );
-  }
-
-  private detectRemote(rawJob: FranceTravailJobResponse): boolean {
-    const lieuTravail = rawJob.lieuTravail?.libelle?.toLowerCase() || '';
-
-    // Remote indicators in location
-    const remoteLocationKeywords = [
-      /\bt[eé]l[eé]travail\b/i,
-      /\bt[eé]l[eé]-travail\b/i,
-      /\bremote\b/i,
-      /\bdistance\b/i,
-      /\b100%?\s*t[eé]l[eé]travail\b/i,
-    ];
-
-    if (remoteLocationKeywords.some(pattern => pattern.test(lieuTravail))) {
-      return true;
-    }
-
-    // Check description for remote indicators
-    const description = `${rawJob.intitule || ''} ${rawJob.description || ''}`.toLowerCase();
-    const remoteDescriptionKeywords = [
-      /\bt[eé]l[eé]travail\s+(?:complet|total|int[eé]gral)\b/i,
-      /\b100%\s*t[eé]l[eé]travail\b/i,
-      /\bfull\s*remote\b/i,
-      /\btotalement\s+[aà]\s+distance\b/i,
-      /\bposte\s+en\s+t[eé]l[eé]travail\b/i,
-    ];
-
-    return remoteDescriptionKeywords.some(pattern => pattern.test(description));
-  }
-
-  private normalizeString(str: string): string {
-    return str
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .trim();
-  }
-
-  /**
    * Extract region ID from postal code or location name
-   * Handles both metropolitan and overseas departments
-   * FIXED: Improved postal code normalization (strip spaces first)
    */
   private async extractRegionId(lieuTravail?: {
     libelle?: string;
@@ -641,15 +603,12 @@ export class FranceTravailAPI {
   }): Promise<number | null> {
     if (!lieuTravail) return null;
 
-    // FIXED: Clean postal code by removing spaces before processing
     const codePostal = lieuTravail.codePostal?.replace(/\s/g, '');
     const libelle = lieuTravail.libelle;
 
-    // Try department code from postal code first
     if (codePostal && codePostal.length >= 2) {
       let dept: string;
 
-      // Handle overseas departments (3-digit codes starting with 97 or 98)
       if (codePostal.startsWith('97') || codePostal.startsWith('98')) {
         dept = codePostal.substring(0, 3).toLowerCase();
       } else {
@@ -663,7 +622,6 @@ export class FranceTravailAPI {
       }
     }
 
-    // Try from location name
     if (libelle) {
       const normalizedLocation = this.normalizeString(libelle);
 
@@ -678,12 +636,10 @@ export class FranceTravailAPI {
   }
 
   private async getRegionIdFromCode(regionCode: string): Promise<number | null> {
-    // Check cache first
     if (this.regionIdCache.has(regionCode)) {
       return this.regionIdCache.get(regionCode)!;
     }
 
-    // Look up from repository if available
     if (this.regionRepository) {
       const regionId = await this.regionRepository.findByCode(regionCode);
       if (regionId) {
@@ -695,64 +651,9 @@ export class FranceTravailAPI {
     return null;
   }
 
-  private mapExperienceLevel(experienceLibelle?: string, fullText?: string): string | null {
-    if (!experienceLibelle && !fullText) return null;
-
-    const lowerExp = experienceLibelle?.toLowerCase() || '';
-    const lowerText = fullText?.toLowerCase() || '';
-    const combined = `${lowerExp} ${lowerText}`;
-
-    // Senior patterns (5+ years)
-    const seniorPatterns = [
-      /\b5\s+ans?\s+et\s+plus\b/i,
-      /\bsenior\b/i,
-      /\bconfirme\b/i,
-      /\bexpert\b/i,
-      /\b(?:plus\s+de\s+)?[5-9]\+?\s+ans?\b/i,
-      /\b(?:plus\s+de\s+)?1[0-9]\+?\s+ans?\b/i,
-      /\blead\b/i,
-      /\barchitecte\b/i,
-      /\bexperimente\b/i,
-    ];
-
-    // Junior patterns (0-2 years)
-    const juniorPatterns = [
-      /\bdebutant\s+accepte\b/i,
-      /\b[0-2]\s+ans?\b/i,
-      /\bjunior\b/i,
-      /\bdebutant\b/i,
-      /\bentree\s+de\s+carriere\b/i,
-      /\bpremiere\s+experience\b/i,
-      /\bjeune\s+diplome\b/i,
-    ];
-
-    // Mid-level patterns (3-4 years)
-    const midPatterns = [/\b[3-4]\s+ans?\b/i, /\bintermediaire\b/i, /\bmid[-\s]?level\b/i];
-
-    if (seniorPatterns.some(p => p.test(combined))) {
-      return 'senior';
-    }
-
-    if (juniorPatterns.some(p => p.test(combined))) {
-      return 'junior';
-    }
-
-    if (midPatterns.some(p => p.test(combined))) {
-      return 'mid';
-    }
-
-    return null;
-  }
-
   /**
    * Extract salary from string - returns value in FULL EUROS
-   *
-   * FIXED: Changed from thousands (k) to full euros for consistency
-   * across the system. This matches standard database expectations.
-   *
-   * Examples:
-   * - "30000 à 40000 Euros par an" → min: 30000, max: 40000
-   * - "50 000 € par an" → min: 50000, max: 50000
+   * (Converted to k€ in mapToDTO)
    */
   private extractSalary(salaryString?: string, type: 'min' | 'max' = 'min'): number | null {
     if (!salaryString || typeof salaryString !== 'string') return null;
@@ -770,7 +671,6 @@ export class FranceTravailAPI {
           return null;
         }
 
-        // FIXED: Return full euros (not thousands)
         return type === 'min' ? min : max;
       } catch {
         return null;
@@ -789,7 +689,6 @@ export class FranceTravailAPI {
           return null;
         }
 
-        // FIXED: Return full euros (not thousands)
         return amount;
       } catch {
         return null;
@@ -799,11 +698,23 @@ export class FranceTravailAPI {
     return null;
   }
 
-  /**
-   * Utility method to delay execution
-   */
+  private normalizeString(str: string): string {
+    return str
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim();
+  }
+
   private delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Get the source name for this API
+   */
+  getSourceName(): string {
+    return this.SOURCE_NAME;
   }
 
   // ========== Circuit Breaker ==========
@@ -815,7 +726,6 @@ export class FranceTravailAPI {
       return true;
     }
 
-    // Reset if enough time has passed
     if (this.circuitBreakerOpenUntil > 0 && Date.now() >= this.circuitBreakerOpenUntil) {
       this.circuitBreakerFailures = 0;
       this.circuitBreakerOpenUntil = 0;
@@ -841,7 +751,6 @@ export class FranceTravailAPI {
   private recordSuccess(): void {
     if (!this.ENABLE_CIRCUIT_BREAKER) return;
 
-    // Reset failure count on success
     if (this.circuitBreakerFailures > 0) {
       this.circuitBreakerFailures = 0;
     }

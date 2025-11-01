@@ -1,10 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
-import { PostgresTechnologyRepository } from './PostgresTechnologyRepository';
-import { Technology } from '../../domain/entities/Technology';
-import { query } from './connection';
+import { PostgresTechnologyRepository } from '../../../../src/infrastructure/database/PostgresTechnologyRepository';
+import { Technology } from '../../../../src/domain/entities/Technology';
+import { query } from '../../../../src/infrastructure/database/connection';
 
-jest.mock('./connection');
+jest.mock('../../../../src/infrastructure/database/connection');
 
 const mockQuery = query as jest.MockedFunction<typeof query>;
 
@@ -179,7 +179,7 @@ describe('PostgresTechnologyRepository', () => {
 
   describe('save', () => {
     it('should insert a new technology', async () => {
-      const technology = new Technology(1, 'TypeScript', 'language', 'TypeScript', 75);
+      const technology = new Technology(1, 'TypeScript', 'backend', 'TypeScript', 75);
 
       mockQuery.mockResolvedValue({ rows: [], rowCount: 1 } as any);
 
@@ -188,7 +188,7 @@ describe('PostgresTechnologyRepository', () => {
       expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO technologies'), [
         1,
         'TypeScript',
-        'language',
+        'backend',
         'TypeScript',
         75,
       ]);
@@ -209,7 +209,7 @@ describe('PostgresTechnologyRepository', () => {
     });
 
     it('should handle technology with zero job count', async () => {
-      const technology = new Technology(5, 'NewTech', 'emerging', 'New Technology', 0);
+      const technology = new Technology(5, 'NewTech', 'other', 'New Technology', 0);
 
       mockQuery.mockResolvedValue({ rows: [], rowCount: 1 } as any);
 

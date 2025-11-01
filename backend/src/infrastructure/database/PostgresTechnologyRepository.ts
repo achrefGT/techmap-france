@@ -1,5 +1,6 @@
 import { ITechnologyRepository } from '../../domain/repositories/ITechnologyRepository';
 import { Technology } from '../../domain/entities/Technology';
+import { TechnologyCategory } from '../../domain/constants/TechnologyCategories';
 import { query } from './connection';
 
 export class PostgresTechnologyRepository implements ITechnologyRepository {
@@ -64,7 +65,7 @@ export class PostgresTechnologyRepository implements ITechnologyRepository {
     return new Technology(
       row.id as number,
       row.name as string,
-      row.category as string,
+      row.category as TechnologyCategory,
       row.display_name as string,
       (row.job_count as number) || 0
     );

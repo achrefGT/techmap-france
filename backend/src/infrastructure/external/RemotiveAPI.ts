@@ -1,5 +1,4 @@
 import axios, { AxiosError } from 'axios';
-import { Job } from '../../domain/entities/Job';
 import { techDetector } from './TechnologyDetector';
 
 interface RemotiveSearchOptions {
@@ -20,11 +19,30 @@ interface RemotiveJobResponse {
   publication_date?: string;
 }
 
+/**
+ * DTO for job data from Remotive API
+ * This represents raw data before domain entity creation
+ */
+export interface RemotiveJobDTO {
+  externalId: string;
+  title: string;
+  company: string;
+  description: string;
+  technologies: string[];
+  location: string;
+  salaryMinKEuros: number | null;
+  salaryMaxKEuros: number | null;
+  experienceLevel: string | null;
+  sourceUrl: string;
+  postedDate: Date;
+}
+
 export class RemotiveAPI {
   private baseUrl = 'https://remotive.com/api/remote-jobs';
   private readonly MAX_RETRY_ATTEMPTS = 3;
   private readonly RETRY_DELAY_MS = 1000;
   private readonly DEFAULT_LIMIT = 50;
+  private readonly SOURCE_NAME = 'remotive';
 
   /**
    * Fetch remote jobs from Remotive API
@@ -33,9 +51,9 @@ export class RemotiveAPI {
    * Recommended: Maximum 4 calls per day. Rapid polling may result in blocking.
    *
    * @param limitOrOptions - Either a number (legacy) or options object
-   * @returns Array of Job entities
+   * @returns Array of RemotiveJobDTO (not domain entities)
    */
-  async fetchJobs(limitOrOptions?: number | RemotiveSearchOptions): Promise<Job[]> {
+  async fetchJobs(limitOrOptions?: number | RemotiveSearchOptions): Promise<RemotiveJobDTO[]> {
     // Backwards compatibility: accept number or options object
     const options: RemotiveSearchOptions =
       typeof limitOrOptions === 'number'
@@ -51,7 +69,7 @@ export class RemotiveAPI {
   private async fetchWithRetry(
     options: RemotiveSearchOptions,
     attempt: number = 1
-  ): Promise<Job[]> {
+  ): Promise<RemotiveJobDTO[]> {
     try {
       const response = await axios.get(this.baseUrl, {
         params: {
@@ -68,7 +86,9 @@ export class RemotiveAPI {
       });
 
       const jobs: RemotiveJobResponse[] = response.data.jobs || [];
-      return jobs.map(job => this.mapToJobSafely(job)).filter((job): job is Job => job !== null);
+      return jobs
+        .map(job => this.mapToDTO(job))
+        .filter((dto): dto is RemotiveJobDTO => dto !== null);
     } catch (error) {
       return this.handleRequestError(error, options, attempt);
     }
@@ -81,7 +101,7 @@ export class RemotiveAPI {
     error: unknown,
     options: RemotiveSearchOptions,
     attempt: number
-  ): Promise<Job[]> {
+  ): Promise<RemotiveJobDTO[]> {
     const isAxiosError = axios.isAxiosError(error);
     const axiosError = error as AxiosError;
 
@@ -133,64 +153,63 @@ export class RemotiveAPI {
   }
 
   /**
-   * Safely map raw job data to Job entity with error handling
+   * Safely map raw job data to DTO with error handling
    */
-  private mapToJobSafely(rawJob: RemotiveJobResponse): Job | null {
+  private mapToDTO(rawJob: RemotiveJobResponse): RemotiveJobDTO | null {
     try {
-      return this.mapToJob(rawJob);
+      // Defensive validation
+      if (!rawJob.id) {
+        console.warn('Skipping job without ID:', rawJob);
+        return null;
+      }
+
+      const title = rawJob.title || 'Remote Position';
+      const company = rawJob.company_name || 'Company Not Specified';
+      const description = rawJob.description || '';
+      const fullText = `${title} ${description}`;
+
+      // Detect technologies from job text
+      const technologies = techDetector.detect(fullText);
+
+      // Validate minimum technology requirement
+      if (technologies.length === 0) {
+        console.warn(`Skipping job ${rawJob.id}: No technologies detected`);
+        return null;
+      }
+
+      // Extract salary (already in k€ or converted to k€)
+      const { salaryMin, salaryMax } = this.extractSalary(rawJob.salary);
+
+      // Handle potentially missing or invalid publication_date
+      let postedDate: Date;
+      try {
+        postedDate = rawJob.publication_date ? new Date(rawJob.publication_date) : new Date();
+
+        // Validate the date is valid and not in the future
+        if (isNaN(postedDate.getTime()) || postedDate > new Date()) {
+          postedDate = new Date();
+        }
+      } catch {
+        postedDate = new Date();
+      }
+
+      return {
+        externalId: `remotive-${rawJob.id}`,
+        title,
+        company,
+        description,
+        technologies,
+        location: rawJob.candidate_required_location || 'Remote',
+        salaryMinKEuros: salaryMin,
+        salaryMaxKEuros: salaryMax,
+        experienceLevel: null, // Will be detected by Job entity
+        sourceUrl: rawJob.url || `https://remotive.com/remote-jobs/${rawJob.id}`,
+        postedDate,
+      };
     } catch (error) {
       console.error('Error mapping Remotive job:', error, rawJob);
       return null;
     }
-  }
-
-  /**
-   * Map raw Remotive API response to Job entity
-   */
-  private mapToJob(rawJob: RemotiveJobResponse): Job {
-    // Defensive validation
-    if (!rawJob.id) {
-      throw new Error('Job ID is required');
-    }
-
-    const title = rawJob.title || 'Remote Position';
-    const description = rawJob.description || '';
-    const fullText = `${title} ${description}`;
-
-    const technologies = techDetector.detect(fullText);
-    const { salaryMin, salaryMax } = this.extractSalary(rawJob.salary);
-    const experienceLevel = this.detectExperienceLevel(fullText);
-
-    // Handle potentially missing or invalid publication_date
-    let postedDate: Date;
-    try {
-      postedDate = rawJob.publication_date ? new Date(rawJob.publication_date) : new Date();
-
-      // Validate the date is valid
-      if (isNaN(postedDate.getTime())) {
-        postedDate = new Date();
-      }
-    } catch {
-      postedDate = new Date();
-    }
-
-    return new Job(
-      `remotive-${rawJob.id}`,
-      title,
-      rawJob.company_name || 'Company Not Specified',
-      description,
-      technologies,
-      rawJob.candidate_required_location || 'Remote',
-      null, // regionId - always null for fully remote positions
-      true, // isRemote - Remotive only lists remote jobs
-      salaryMin,
-      salaryMax,
-      experienceLevel,
-      'remotive',
-      rawJob.url || `https://remotive.com/remote-jobs/${rawJob.id}`,
-      postedDate,
-      true
-    );
   }
 
   /**
@@ -200,6 +219,7 @@ export class RemotiveAPI {
    * - "$40,000 - $50,000" → { salaryMin: 40, salaryMax: 50 }
    * - "$40k - $50k" → { salaryMin: 40, salaryMax: 50 }
    * - "45000 - 65000" → { salaryMin: 45, salaryMax: 65 }
+   * - "€60k - €80k" → { salaryMin: 60, salaryMax: 80 }
    */
   private extractSalary(salaryString?: string): {
     salaryMin: number | null;
@@ -210,62 +230,39 @@ export class RemotiveAPI {
     }
 
     // Match patterns like "$40,000 - $50,000" or "$40k - $50k" or "45000 - 65000"
-    const rangePattern = /\$?\s*(\d+(?:,\d{3})*)(k)?\s*(?:[-–—]|to)\s*\$?\s*(\d+(?:,\d{3})*)(k)?/i;
+    // Also handles € symbol
+    const rangePattern =
+      /[$€]?\s*(\d+(?:,\d{3})*)(k)?\s*(?:[-–—]|to)\s*[$€]?\s*(\d+(?:,\d{3})*)(k)?/i;
     const match = salaryString.match(rangePattern);
 
     if (match) {
-      const parseAmount = (numStr: string, hasK: string | undefined): number => {
-        // Remove commas
-        const cleaned = numStr.replace(/,/g, '');
-        const num = parseInt(cleaned, 10);
-
-        if (isNaN(num)) {
-          throw new Error('Invalid number in salary string');
-        }
-
-        // If it has 'k' suffix, it's already in thousands
-        if (hasK) {
-          return num;
-        }
-
-        // Otherwise, it's a full number like 40000, convert to thousands
-        return Math.round(num / 1000);
-      };
-
       try {
-        return {
-          salaryMin: parseAmount(match[1], match[2]),
-          salaryMax: parseAmount(match[3], match[4]),
-        };
-      } catch {
+        const min = this.parseAmount(match[1], match[2]);
+        const max = this.parseAmount(match[3], match[4]);
+
+        // Basic validation
+        if (min > max) {
+          console.warn(`Invalid salary range: ${salaryString}`);
+          return { salaryMin: null, salaryMax: null };
+        }
+
+        return { salaryMin: min, salaryMax: max };
+      } catch (error) {
+        console.warn(`Failed to parse salary range: ${salaryString}`, error);
         return { salaryMin: null, salaryMax: null };
       }
     }
 
     // Try to match single value like "$50,000" or "$50k"
-    const singlePattern = /\$?\s*(\d+(?:,\d{3})*)(k)?/i;
+    const singlePattern = /[$€]?\s*(\d+(?:,\d{3})*)(k)?/i;
     const singleMatch = salaryString.match(singlePattern);
 
     if (singleMatch) {
       try {
-        const parseAmount = (numStr: string, hasK: string | undefined): number => {
-          const cleaned = numStr.replace(/,/g, '');
-          const num = parseInt(cleaned, 10);
-
-          if (isNaN(num)) {
-            throw new Error('Invalid number in salary string');
-          }
-
-          if (hasK) {
-            return num;
-          }
-
-          return Math.round(num / 1000);
-        };
-
-        const amount = parseAmount(singleMatch[1], singleMatch[2]);
+        const amount = this.parseAmount(singleMatch[1], singleMatch[2]);
         return { salaryMin: amount, salaryMax: amount };
-      } catch {
+      } catch (error) {
+        console.warn(`Failed to parse single salary: ${salaryString}`, error);
         return { salaryMin: null, salaryMax: null };
       }
     }
@@ -274,55 +271,24 @@ export class RemotiveAPI {
   }
 
   /**
-   * Detect experience level from job text
+   * Parse salary amount and convert to k€
    */
-  private detectExperienceLevel(text: string): string | null {
-    const lowerText = text.toLowerCase();
+  private parseAmount(numStr: string, hasK: string | undefined): number {
+    // Remove commas and spaces
+    const cleaned = numStr.replace(/[,\s]/g, '');
+    const num = parseInt(cleaned, 10);
 
-    // Senior patterns (5+ years) - Check FIRST
-    const seniorPatterns = [
-      /\bsenior\b/i,
-      /\blead\b/i,
-      /\bstaff\b/i,
-      /\bprincipal\b/i,
-      /\barchitect\b/i,
-      /\bexpert\b/i,
-      /\b(?:5\+?|[5-9]|1[0-9])\s+years?\b/i,
-      /\b(?:5\+?|[5-9]|1[0-9])\s+years?\s+(?:of\s+)?experience\b/i,
-    ];
-
-    // Junior patterns (0-2 years) - Check SECOND
-    const juniorPatterns = [
-      /\bjunior\b/i,
-      /\bentry[-\s]?level\b/i,
-      /\bintern(?:ship)?\b/i,
-      /\bgraduate\b/i,
-      /\b[0-2]\s+years?\b/i,
-      /\b[0-2]\s+years?\s+(?:of\s+)?experience\b/i,
-      /\bearly[-\s]?career\b/i,
-    ];
-
-    // Mid-level patterns (3-4 years) - Check LAST
-    const midPatterns = [
-      /\bmid(?:[-\s]?level)?\b/i,
-      /\bintermediate\b/i,
-      /\b[3-4]\s+years?\b/i,
-      /\b[3-4]\s+years?\s+(?:of\s+)?experience\b/i,
-    ];
-
-    if (seniorPatterns.some(p => p.test(lowerText))) {
-      return 'senior';
+    if (isNaN(num) || num <= 0) {
+      throw new Error('Invalid number in salary string');
     }
 
-    if (juniorPatterns.some(p => p.test(lowerText))) {
-      return 'junior';
+    // If it has 'k' suffix, it's already in thousands
+    if (hasK) {
+      return num;
     }
 
-    if (midPatterns.some(p => p.test(lowerText))) {
-      return 'mid';
-    }
-
-    return null;
+    // Otherwise, it's a full number like 40000, convert to thousands
+    return Math.round(num / 1000);
   }
 
   /**
@@ -330,5 +296,12 @@ export class RemotiveAPI {
    */
   private delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Get the source name for this API
+   */
+  getSourceName(): string {
+    return this.SOURCE_NAME;
   }
 }

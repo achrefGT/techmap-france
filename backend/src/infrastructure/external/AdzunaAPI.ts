@@ -1,5 +1,4 @@
 import axios, { AxiosError } from 'axios';
-import { Job } from '../../domain/entities/Job';
 import { techDetector } from './TechnologyDetector';
 
 interface AdzunaSearchOptions {
@@ -9,12 +8,56 @@ interface AdzunaSearchOptions {
   delayBetweenRequests?: number;
 }
 
+interface AdzunaJobResponse {
+  id: string;
+  title?: string;
+  company?: {
+    display_name?: string;
+  };
+  description?: string;
+  location?: {
+    display_name?: string;
+    area?: string[];
+  };
+  salary_min?: number;
+  salary_max?: number;
+  redirect_url?: string;
+  created?: string;
+}
+
+/**
+ * DTO for job data from Adzuna API
+ * This represents raw data before domain entity creation
+ */
+export interface AdzunaJobDTO {
+  externalId: string;
+  title: string;
+  company: string;
+  description: string;
+  technologies: string[];
+  location: string;
+  regionId: number | null;
+  salaryMinKEuros: number | null;
+  salaryMaxKEuros: number | null;
+  experienceLevel: null; // Always null - domain layer responsibility
+  sourceUrl: string;
+  postedDate: Date;
+}
+
+/**
+ * Optional region repository interface for region lookups
+ */
+interface RegionRepository {
+  findByCode(code: string): Promise<number | null>;
+}
+
 export class AdzunaAPI {
   private baseUrl = 'https://api.adzuna.com/v1/api/jobs/fr/search';
   private readonly MAX_RESULTS_PER_PAGE = 50;
-  private readonly DEFAULT_DELAY_MS = 200; // Delay between paginated requests
+  private readonly DEFAULT_DELAY_MS = 200;
   private readonly MAX_RETRY_ATTEMPTS = 3;
   private readonly RETRY_DELAY_MS = 1000;
+  private readonly SOURCE_NAME = 'adzuna';
 
   // Region mapping: normalized location string (without accents) -> region code
   private regionCodeMapping: Map<string, string> = new Map([
@@ -47,7 +90,7 @@ export class AdzunaAPI {
   constructor(
     private appId: string,
     private appKey: string,
-    private regionRepository?: { findByCode(code: string): Promise<number | null> }
+    private regionRepository?: RegionRepository
   ) {
     if (!appId || !appKey) {
       throw new Error('Adzuna API credentials (appId and appKey) are required');
@@ -56,10 +99,9 @@ export class AdzunaAPI {
 
   /**
    * Fetch jobs with optional pagination
-   * @param options Search options including keywords, pagination settings
-   * @returns Array of Job entities
+   * Returns DTOs, not domain entities
    */
-  async fetchJobs(options: AdzunaSearchOptions = {}): Promise<Job[]> {
+  async fetchJobs(options: AdzunaSearchOptions = {}): Promise<AdzunaJobDTO[]> {
     const {
       keywords = 'développeur',
       maxPages = 1,
@@ -67,7 +109,6 @@ export class AdzunaAPI {
       delayBetweenRequests = this.DEFAULT_DELAY_MS,
     } = options;
 
-    // Validate results per page
     if (resultsPerPage > this.MAX_RESULTS_PER_PAGE) {
       console.warn(
         `results_per_page exceeds maximum (${this.MAX_RESULTS_PER_PAGE}), using maximum`
@@ -75,20 +116,18 @@ export class AdzunaAPI {
     }
 
     const actualResultsPerPage = Math.min(resultsPerPage, this.MAX_RESULTS_PER_PAGE);
-    const allJobs: Job[] = [];
+    const allJobs: AdzunaJobDTO[] = [];
 
     try {
       for (let page = 1; page <= maxPages; page++) {
         const pageJobs = await this.fetchPage(keywords, page, actualResultsPerPage);
 
         if (pageJobs.length === 0) {
-          // No more results, stop pagination
           break;
         }
 
         allJobs.push(...pageJobs);
 
-        // Add delay between requests to be polite to the API
         if (page < maxPages && pageJobs.length > 0) {
           await this.delay(delayBetweenRequests);
         }
@@ -97,7 +136,7 @@ export class AdzunaAPI {
       return allJobs;
     } catch (error) {
       console.error('Adzuna API error:', error);
-      return allJobs; // Return any jobs we managed to fetch
+      return allJobs;
     }
   }
 
@@ -109,7 +148,7 @@ export class AdzunaAPI {
     page: number,
     resultsPerPage: number,
     attempt: number = 1
-  ): Promise<Job[]> {
+  ): Promise<AdzunaJobDTO[]> {
     try {
       const response = await axios.get(`${this.baseUrl}/${page}`, {
         params: {
@@ -125,15 +164,14 @@ export class AdzunaAPI {
         validateStatus: status => status >= 200 && status < 300,
       });
 
-      // Explicit status check
       if (response.status !== 200) {
         throw new Error(`Unexpected status code: ${response.status}`);
       }
 
-      const jobs = response.data.results || [];
-      const mappedJobs = await Promise.all(jobs.map((job: any) => this.mapToJob(job)));
+      const jobs: AdzunaJobResponse[] = response.data.results || [];
+      const mappedJobs = await Promise.all(jobs.map(job => this.mapToDTO(job)));
 
-      return mappedJobs;
+      return mappedJobs.filter((dto): dto is AdzunaJobDTO => dto !== null);
     } catch (error) {
       return this.handleRequestError(error, keywords, page, resultsPerPage, attempt);
     }
@@ -148,17 +186,16 @@ export class AdzunaAPI {
     page: number,
     resultsPerPage: number,
     attempt: number
-  ): Promise<Job[]> {
+  ): Promise<AdzunaJobDTO[]> {
     const isAxiosError = axios.isAxiosError(error);
     const axiosError = error as AxiosError;
 
-    // Determine if we should retry
     const shouldRetry =
       attempt < this.MAX_RETRY_ATTEMPTS &&
       isAxiosError &&
-      (axiosError.code === 'ECONNABORTED' || // Timeout
+      (axiosError.code === 'ECONNABORTED' ||
         axiosError.code === 'ETIMEDOUT' ||
-        (axiosError.response?.status && axiosError.response.status >= 500)); // Server errors
+        (axiosError.response?.status && axiosError.response.status >= 500));
 
     if (shouldRetry) {
       const backoffDelay = this.RETRY_DELAY_MS * Math.pow(2, attempt - 1);
@@ -172,7 +209,6 @@ export class AdzunaAPI {
       return this.fetchPage(keywords, page, resultsPerPage, attempt + 1);
     }
 
-    // Log the error with details
     if (isAxiosError) {
       if (axiosError.response) {
         console.error(
@@ -191,78 +227,82 @@ export class AdzunaAPI {
     return [];
   }
 
-  private async mapToJob(rawJob: any): Promise<Job> {
-    // Defensive field access with fallbacks
-    const title = rawJob.title || 'Sans titre';
-    const description = rawJob.description || '';
-    const fullText = `${title} ${description}`;
+  /**
+   * Map raw API response to DTO with error handling
+   */
+  private async mapToDTO(rawJob: AdzunaJobResponse): Promise<AdzunaJobDTO | null> {
+    try {
+      if (!rawJob.id) {
+        console.warn('Skipping job without ID:', rawJob);
+        return null;
+      }
 
-    const technologies = techDetector.detect(fullText);
-    const isRemote = this.detectRemote(fullText, rawJob.location?.display_name);
-    const regionId = await this.extractRegionId(rawJob.location?.display_name);
-    const experienceLevel = this.detectExperienceLevel(fullText);
+      const title = rawJob.title || 'Sans titre';
+      const company = rawJob.company?.display_name || 'Non spécifié';
+      const description = rawJob.description || '';
+      const fullText = `${title} ${description}`;
 
-    return new Job(
-      `adzuna-${rawJob.id}`,
-      title,
-      rawJob.company?.display_name || 'Non spécifié',
-      description,
-      technologies,
-      rawJob.location?.display_name || 'France',
-      regionId,
-      isRemote,
-      rawJob.salary_min ? Math.round(rawJob.salary_min / 1000) : null,
-      rawJob.salary_max ? Math.round(rawJob.salary_max / 1000) : null,
-      experienceLevel,
-      'adzuna',
-      rawJob.redirect_url || '',
-      rawJob.created ? new Date(rawJob.created) : new Date(),
-      true
-    );
+      // Detect technologies
+      const technologies = techDetector.detect(fullText);
+
+      // Validate minimum technology requirement
+      if (technologies.length === 0) {
+        console.warn(`Skipping job: No technologies detected`, rawJob);
+        return null;
+      }
+
+      // Extract region ID
+      const regionId = await this.extractRegionId(rawJob.location?.display_name);
+
+      // Convert salary from full euros to k€
+      const salaryMinKEuros = rawJob.salary_min ? Math.round(rawJob.salary_min / 1000) : null;
+      const salaryMaxKEuros = rawJob.salary_max ? Math.round(rawJob.salary_max / 1000) : null;
+
+      // Handle date
+      let postedDate: Date;
+      try {
+        postedDate = rawJob.created ? new Date(rawJob.created) : new Date();
+        if (isNaN(postedDate.getTime()) || postedDate > new Date()) {
+          postedDate = new Date();
+        }
+      } catch {
+        postedDate = new Date();
+      }
+
+      return {
+        externalId: `adzuna-${rawJob.id}`,
+        title,
+        company,
+        description,
+        technologies,
+        location: rawJob.location?.display_name || 'France',
+        regionId,
+        salaryMinKEuros,
+        salaryMaxKEuros,
+        experienceLevel: null, // Domain layer responsibility
+        sourceUrl: rawJob.redirect_url || '',
+        postedDate,
+      };
+    } catch (error) {
+      console.error('Error mapping Adzuna job:', error, rawJob);
+      return null;
+    }
   }
 
-  private detectRemote(text: string, location?: string): boolean {
-    const lowerText = text.toLowerCase();
-    const lowerLocation = location?.toLowerCase() || '';
-
-    // Remote indicators - support both accented and non-accented characters
-    const remoteKeywords = [
-      /\bt[eé]l[eé]travail\b/i,
-      /\bremote\b/i,
-      /\bdistance\b/i,
-      /\b100%?\s*remote\b/i,
-      /\bfull\s*remote\b/i,
-      /\btravail\s+[aà]\s+distance\b/i,
-      /\ben\s+remote\b/i,
-      /\btotalement\s+[aà]\s+distance\b/i,
-      /\bhome\s*office\b/i,
-    ];
-
-    return remoteKeywords.some(pattern => pattern.test(lowerText) || pattern.test(lowerLocation));
-  }
-
-  private normalizeString(str: string): string {
-    return str
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '') // Remove diacritics/accents
-      .trim();
-  }
-
+  /**
+   * Extract region ID from location string
+   */
   private async extractRegionId(location?: string): Promise<number | null> {
     if (!location) return null;
 
     const normalizedLocation = this.normalizeString(location);
 
-    // Try to find matching region code
     for (const [normalizedKey, regionCode] of this.regionCodeMapping) {
       if (normalizedLocation.includes(normalizedKey)) {
-        // Check cache first
         if (this.regionIdCache.has(regionCode)) {
           return this.regionIdCache.get(regionCode)!;
         }
 
-        // Look up from repository if available
         if (this.regionRepository) {
           const regionId = await this.regionRepository.findByCode(regionCode);
           if (regionId) {
@@ -271,7 +311,6 @@ export class AdzunaAPI {
           }
         }
 
-        // If no repository, return null
         return null;
       }
     }
@@ -279,66 +318,22 @@ export class AdzunaAPI {
     return null;
   }
 
-  private detectExperienceLevel(text: string): string | null {
-    const lowerText = text.toLowerCase();
+  private normalizeString(str: string): string {
+    return str
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim();
+  }
 
-    // Senior patterns (5+ years)
-    const seniorPatterns = [
-      /\bsenior\b/i,
-      /\bconfirm[eé]\b/i,
-      /\bexpert\b/i,
-      /\b(?:plus\s+de\s+)?[5-9]\+?\s+ans?\b/i,
-      /\b(?:plus\s+de\s+)?1[0-9]\+?\s+ans?\b/i,
-      /\b[5-9]\s+ans?\s+d['']exp[eé]rience\b/i,
-      /\b1[0-9]\s+ans?\s+d['']exp[eé]rience\b/i,
-      /\blead\b/i,
-      /\barchitecte\b/i,
-      /\bprincipal\b/i,
-      /\bstaff\b/i,
-      /\bexp[eé]riment[eé]\b/i,
-    ];
-
-    // Junior patterns (0-2 years)
-    const juniorPatterns = [
-      /\bjunior\b/i,
-      /\bd[eé]butant\b/i,
-      /\bentr[eé]e\s+de\s+carri[eè]re\b/i,
-      /\b0[-\s]?[aà][-\s]?2\s+ans?\b/i,
-      /\bpremi[eè]re\s+exp[eé]rience\b/i,
-      /\bjeune\s+dipl[oô]m[eé]\b/i,
-      /\bstage\b/i,
-      /\balternance\b/i,
-      /\b[0-2]\s+ans?\s+d['']exp[eé]rience\b/i,
-    ];
-
-    // Mid-level patterns (3-4 years)
-    const midPatterns = [
-      /\b[3-4]\s+ans?\s+d['']exp[eé]rience\b/i,
-      /\b[3-4]\s+ans?\b/i,
-      /\b[2-4][-\s]?[aà][-\s]?5\s+ans?\b/i,
-      /\binterm[eé]diaire\b/i,
-      /\bmid[-\s]?level\b/i,
-    ];
-
-    if (seniorPatterns.some(p => p.test(lowerText))) {
-      return 'senior';
-    }
-
-    if (juniorPatterns.some(p => p.test(lowerText))) {
-      return 'junior';
-    }
-
-    if (midPatterns.some(p => p.test(lowerText))) {
-      return 'mid';
-    }
-
-    return null;
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   /**
-   * Utility method to delay execution
+   * Get the source name for this API
    */
-  private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  getSourceName(): string {
+    return this.SOURCE_NAME;
   }
 }

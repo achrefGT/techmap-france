@@ -1,4 +1,5 @@
 import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals';
+import type { RedisCache } from '../../../../src/infrastructure/cache/RedisCache';
 
 // Create the mock instance with proper typing
 const mockRedisInstance = {
@@ -25,28 +26,24 @@ jest.mock('@upstash/redis', () => ({
 }));
 
 describe('RedisCache', () => {
-  let RedisCache: typeof import('./RedisCache').RedisCache;
-  let cache: import('./RedisCache').RedisCache;
+  let RedisCacheClass: typeof RedisCache;
+  let cache: RedisCache;
   let Redis: any;
 
   beforeEach(async () => {
-    // Clear all mock calls (but keep the mock implementations)
     jest.clearAllMocks();
 
-    // Setup environment variables
     process.env.UPSTASH_REDIS_REST_URL = 'https://test.upstash.io';
     process.env.UPSTASH_REDIS_REST_TOKEN = 'test-token';
     process.env.REDIS_KEY_PREFIX = 'test:';
 
-    // Import the modules
     const redisModule = await import('@upstash/redis');
     Redis = redisModule.Redis;
 
-    const redisCacheModule = await import('./RedisCache');
-    RedisCache = redisCacheModule.RedisCache;
+    const redisCacheModule = await import('../../../../src/infrastructure/cache/RedisCache');
+    RedisCacheClass = redisCacheModule.RedisCache;
 
-    // Create a new cache instance
-    cache = new RedisCache();
+    cache = new RedisCacheClass();
   });
 
   afterEach(() => {
@@ -64,7 +61,7 @@ describe('RedisCache', () => {
       jest.resetModules();
 
       // The module throws at import time, not at construction time
-      await expect(import('./RedisCache')).rejects.toThrow(
+      await expect(import('../../../../src/infrastructure/cache/RedisCache')).rejects.toThrow(
         'Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN'
       );
 
@@ -81,7 +78,7 @@ describe('RedisCache', () => {
       jest.resetModules();
 
       // The module throws at import time, not at construction time
-      await expect(import('./RedisCache')).rejects.toThrow(
+      await expect(import('../../../../src/infrastructure/cache/RedisCache')).rejects.toThrow(
         'Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN'
       );
 

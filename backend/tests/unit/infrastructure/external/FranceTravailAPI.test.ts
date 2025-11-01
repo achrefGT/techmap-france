@@ -1,10 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import axios from 'axios';
-import { FranceTravailAPI } from './FranceTravailAPI';
+import { FranceTravailAPI } from '../../../../src/infrastructure/external/FranceTravailAPI';
 
 jest.mock('axios');
-jest.mock('./TechnologyDetector', () => ({
+jest.mock('../../../../src/infrastructure/external/TechnologyDetector', () => ({
   techDetector: {
     detect: jest.fn().mockReturnValue(['Python', 'Django']),
   },
@@ -112,7 +112,6 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
     });
 
     it('should clear token on 401 authentication error during job fetch', async () => {
-      // FIXED: First call fails with 401, token refresh succeeds, retry succeeds
       const authError = {
         isAxiosError: true,
         response: { status: 401, data: 'Unauthorized' },
@@ -148,6 +147,88 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
     });
   });
 
+  describe('DTO structure', () => {
+    it('should return DTOs with correct structure', async () => {
+      const mockResponse = {
+        data: {
+          resultats: [
+            {
+              id: '123',
+              intitule: 'Développeur Python Senior',
+              entreprise: { nom: 'TechCorp' },
+              description: 'Développer des applications avec Python et Django',
+              lieuTravail: {
+                libelle: 'Paris',
+                codePostal: '75001',
+              },
+              salaire: {
+                libelle: '40000 à 50000 Euros par an',
+              },
+              dateCreation: '2024-01-15T10:00:00Z',
+              origineOffre: {
+                urlOrigine: 'https://example.com/job/123',
+              },
+            },
+          ],
+        },
+      };
+
+      mockedAxios.get.mockResolvedValue(mockResponse);
+
+      const jobs = await api.fetchJobs();
+
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]).toEqual({
+        externalId: 'francetravail-123',
+        title: 'Développeur Python Senior',
+        company: 'TechCorp',
+        description: 'Développer des applications avec Python et Django',
+        technologies: ['Python', 'Django'],
+        location: 'Paris',
+        regionId: null, // No region repo provided
+        salaryMinKEuros: 40,
+        salaryMaxKEuros: 50,
+        experienceLevel: null, // Always null - domain responsibility
+        sourceUrl: 'https://example.com/job/123',
+        postedDate: expect.any(Date),
+      });
+    });
+
+    it('should always return null for experienceLevel (domain responsibility)', async () => {
+      const mockResponse = {
+        data: {
+          resultats: [
+            {
+              id: '100',
+              intitule: 'Développeur Junior',
+              entreprise: { nom: 'Company' },
+              description: 'Poste pour débutant with Python',
+              experienceLibelle: 'Débutant accepté',
+              dateCreation: '2024-01-15T10:00:00Z',
+            },
+            {
+              id: '101',
+              intitule: 'Développeur Senior',
+              entreprise: { nom: 'Company' },
+              description: "Minimum 5 ans d'expérience with Django",
+              experienceLibelle: '5 ans et plus',
+              dateCreation: '2024-01-15T10:00:00Z',
+            },
+          ],
+        },
+      };
+
+      mockedAxios.get.mockResolvedValue(mockResponse);
+
+      const jobs = await api.fetchJobs();
+
+      expect(jobs).toHaveLength(2);
+      // All jobs should have null experienceLevel - detection is domain responsibility
+      expect(jobs[0].experienceLevel).toBeNull();
+      expect(jobs[1].experienceLevel).toBeNull();
+    });
+  });
+
   describe('pagination', () => {
     it('should fetch multiple pages when maxResults exceeds 150', async () => {
       const mockResponse1 = {
@@ -158,7 +239,7 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
               id: `job-${i}`,
               intitule: `Developer ${i}`,
               entreprise: { nom: 'Company' },
-              description: 'Job description',
+              description: 'Job description with Python',
               dateCreation: '2024-01-15T10:00:00Z',
             })),
         },
@@ -172,7 +253,7 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
               id: `job-${i + 150}`,
               intitule: `Developer ${i + 150}`,
               entreprise: { nom: 'Company' },
-              description: 'Job description',
+              description: 'Job description with Django',
               dateCreation: '2024-01-15T10:00:00Z',
             })),
         },
@@ -216,7 +297,7 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
               id: `job-${i}`,
               intitule: `Developer ${i}`,
               entreprise: { nom: 'Company' },
-              description: 'Job description',
+              description: 'Job description with Python',
               dateCreation: '2024-01-15T10:00:00Z',
             })),
         },
@@ -224,7 +305,7 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
 
       const mockResponse2 = {
         data: {
-          resultats: [], // No more results
+          resultats: [],
         },
       };
 
@@ -233,20 +314,7 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
       const jobs = await api.fetchJobs({ maxResults: 300 });
 
       expect(jobs).toHaveLength(150);
-      expect(mockedAxios.get).toHaveBeenCalledTimes(2); // Stopped after empty
-    });
-
-    it('should respect 150 max per request limit', async () => {
-      // Mock needs to return data for each call
-      mockedAxios.get
-        .mockResolvedValueOnce({ data: { resultats: [] } })
-        .mockResolvedValueOnce({ data: { resultats: [] } })
-        .mockResolvedValueOnce({ data: { resultats: [] } });
-
-      await api.fetchJobs({ maxResults: 450 });
-
-      // Should make 3 requests for 450 items (or until empty)
-      expect(mockedAxios.get).toHaveBeenCalledTimes(1); // Actually stops at first empty
+      expect(mockedAxios.get).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -265,7 +333,7 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
               id: '1',
               intitule: 'Developer',
               entreprise: { nom: 'Company' },
-              description: 'Job description',
+              description: 'Job description with Python',
               dateCreation: '2024-01-15T10:00:00Z',
             },
           ],
@@ -302,7 +370,7 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
               id: '2',
               intitule: 'Developer',
               entreprise: { nom: 'Company' },
-              description: 'Job description',
+              description: 'Job description with Django',
               dateCreation: '2024-01-15T10:00:00Z',
             },
           ],
@@ -320,13 +388,12 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
     });
 
     it('should retry on 429 rate limit with longer backoff', async () => {
-      // FIXED: Mock headers properly
       const rateLimitError = {
         isAxiosError: true,
         response: {
           status: 429,
           data: 'Rate limit exceeded',
-          headers: {}, // Add empty headers
+          headers: {},
         },
         message: '429 error',
       };
@@ -340,7 +407,7 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
               id: '3',
               intitule: 'Developer',
               entreprise: { nom: 'Company' },
-              description: 'Job description',
+              description: 'Job description with Python',
               dateCreation: '2024-01-15T10:00:00Z',
             },
           ],
@@ -349,11 +416,9 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
 
       const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
-      // Use fake timers to avoid actual delays
       jest.useFakeTimers();
       const jobsPromise = api.fetchJobs();
 
-      // Fast-forward through all timers
       await jest.runAllTimersAsync();
       const jobs = await jobsPromise;
 
@@ -367,7 +432,7 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
       expect(mockedAxios.get).toHaveBeenCalledTimes(2);
 
       consoleWarnSpy.mockRestore();
-    }, 10000); // Increase timeout
+    }, 10000);
 
     it('should not retry on 4xx client errors (except 429)', async () => {
       const clientError = {
@@ -384,19 +449,18 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
       const jobs = await api.fetchJobs();
 
       expect(jobs).toEqual([]);
-      expect(mockedAxios.get).toHaveBeenCalledTimes(1); // No retry
+      expect(mockedAxios.get).toHaveBeenCalledTimes(1);
 
       consoleErrorSpy.mockRestore();
     });
 
     it('should show specific error message for 429 after max retries', async () => {
-      // FIXED: Mock headers properly
       const rateLimitError = {
         isAxiosError: true,
         response: {
           status: 429,
           data: 'Rate limit exceeded',
-          headers: {}, // Add empty headers
+          headers: {},
         },
         message: '429 error',
       };
@@ -407,11 +471,9 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
       const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
       const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
-      // Use fake timers
       jest.useFakeTimers();
       const jobsPromise = api.fetchJobs();
 
-      // Fast-forward through all timers
       await jest.runAllTimersAsync();
       await jobsPromise;
 
@@ -422,7 +484,7 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
 
       consoleWarnSpy.mockRestore();
       consoleErrorSpy.mockRestore();
-    }, 10000); // Increase timeout
+    }, 10000);
   });
 
   describe('overseas departments', () => {
@@ -445,7 +507,7 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
               id: '1',
               intitule: 'Développeur',
               entreprise: { nom: 'Company' },
-              description: 'Description',
+              description: 'Description with Python',
               lieuTravail: {
                 libelle: 'Pointe-à-Pitre',
                 codePostal: '97110',
@@ -483,7 +545,7 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
               id: '2',
               intitule: 'Développeur',
               entreprise: { nom: 'Company' },
-              description: 'Description',
+              description: 'Description with Django',
               lieuTravail: {
                 libelle: 'Saint-Denis',
                 codePostal: '97400',
@@ -512,7 +574,7 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
               // Missing ID
               intitule: 'Developer',
               entreprise: { nom: 'Company' },
-              description: 'Description',
+              description: 'Description with Python',
               dateCreation: '2024-01-15T10:00:00Z',
             },
           ],
@@ -521,18 +583,54 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
 
       mockedAxios.get.mockResolvedValue(mockResponse);
 
-      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
       const jobs = await api.fetchJobs();
 
-      expect(jobs).toEqual([]); // Bad record filtered out
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Error mapping'),
-        expect.anything(),
-        expect.anything()
+      expect(jobs).toEqual([]);
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Skipping job without ID'),
+        expect.anything() // ← Add this
       );
 
-      consoleErrorSpy.mockRestore();
+      consoleWarnSpy.mockRestore();
+    });
+
+    it('should skip jobs without detected technologies', async () => {
+      const {
+        techDetector,
+      } = require('../../../../src/infrastructure/external/TechnologyDetector');
+      (techDetector.detect as jest.Mock).mockReturnValueOnce([]);
+
+      const mockResponse = {
+        data: {
+          resultats: [
+            {
+              id: '123',
+              intitule: 'Generic Position',
+              entreprise: { nom: 'Company' },
+              description: 'Very vague description',
+              dateCreation: '2024-01-15T10:00:00Z',
+            },
+          ],
+        },
+      };
+
+      mockedAxios.get.mockResolvedValue(mockResponse);
+
+      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const jobs = await api.fetchJobs();
+
+      expect(jobs).toEqual([]);
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('No technologies detected')
+      );
+
+      consoleWarnSpy.mockRestore();
+
+      // Restore mock
+      (techDetector.detect as jest.Mock).mockReturnValue(['Python', 'Django']);
     });
 
     it('should handle invalid dateCreation', async () => {
@@ -543,7 +641,7 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
               id: '123',
               intitule: 'Developer',
               entreprise: { nom: 'Company' },
-              description: 'Description',
+              description: 'Description with Python',
               dateCreation: 'invalid-date',
             },
           ],
@@ -556,7 +654,6 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
 
       expect(jobs).toHaveLength(1);
       expect(jobs[0].postedDate).toBeInstanceOf(Date);
-      // Should fallback to current date
       expect(jobs[0].postedDate.getTime()).toBeGreaterThan(Date.now() - 5000);
     });
 
@@ -568,8 +665,7 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
               id: '456',
               intitule: 'Developer',
               entreprise: { nom: 'Company' },
-              description: 'Description',
-              // Missing dateCreation
+              description: 'Description with Django',
             },
           ],
         },
@@ -591,20 +687,20 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
               id: '1',
               intitule: 'Developer 1',
               entreprise: { nom: 'Company' },
-              description: 'Description',
+              description: 'Description with Python',
               dateCreation: '2024-01-15T10:00:00Z',
             },
             {
               // Invalid - missing ID
               intitule: 'Developer 2',
               entreprise: { nom: 'Company' },
-              description: 'Description',
+              description: 'Description with Django',
             },
             {
               id: '3',
               intitule: 'Developer 3',
               entreprise: { nom: 'Company' },
-              description: 'Description',
+              description: 'Description with Python',
               dateCreation: '2024-01-15T10:00:00Z',
             },
           ],
@@ -613,15 +709,15 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
 
       mockedAxios.get.mockResolvedValue(mockResponse);
 
-      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
       const jobs = await api.fetchJobs();
 
       expect(jobs).toHaveLength(2);
-      expect(jobs[0].id).toBe('francetravail-1');
-      expect(jobs[1].id).toBe('francetravail-3');
+      expect(jobs[0].externalId).toBe('francetravail-1');
+      expect(jobs[1].externalId).toBe('francetravail-3');
 
-      consoleErrorSpy.mockRestore();
+      consoleWarnSpy.mockRestore();
     });
   });
 
@@ -655,6 +751,92 @@ describe('FranceTravailAPI - Extended Robustness Tests', () => {
           }),
         })
       );
+    });
+  });
+
+  describe('salary conversion', () => {
+    it('should convert full euros to k€', async () => {
+      const mockResponse = {
+        data: {
+          resultats: [
+            {
+              id: '200',
+              intitule: 'Développeur',
+              entreprise: { nom: 'Company' },
+              description: 'Description with Python',
+              salaire: {
+                libelle: '40000 à 50000 Euros par an',
+              },
+              dateCreation: '2024-01-15T10:00:00Z',
+            },
+          ],
+        },
+      };
+
+      mockedAxios.get.mockResolvedValue(mockResponse);
+
+      const jobs = await api.fetchJobs();
+
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].salaryMinKEuros).toBe(40);
+      expect(jobs[0].salaryMaxKEuros).toBe(50);
+    });
+
+    it('should handle single salary value', async () => {
+      const mockResponse = {
+        data: {
+          resultats: [
+            {
+              id: '201',
+              intitule: 'Développeur',
+              entreprise: { nom: 'Company' },
+              description: 'Description with Django',
+              salaire: {
+                libelle: '45 000 € par an',
+              },
+              dateCreation: '2024-01-15T10:00:00Z',
+            },
+          ],
+        },
+      };
+
+      mockedAxios.get.mockResolvedValue(mockResponse);
+
+      const jobs = await api.fetchJobs();
+
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].salaryMinKEuros).toBe(45);
+      expect(jobs[0].salaryMaxKEuros).toBe(45);
+    });
+
+    it('should handle missing salary', async () => {
+      const mockResponse = {
+        data: {
+          resultats: [
+            {
+              id: '202',
+              intitule: 'Développeur',
+              entreprise: { nom: 'Company' },
+              description: 'Description with Python',
+              dateCreation: '2024-01-15T10:00:00Z',
+            },
+          ],
+        },
+      };
+
+      mockedAxios.get.mockResolvedValue(mockResponse);
+
+      const jobs = await api.fetchJobs();
+
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].salaryMinKEuros).toBeNull();
+      expect(jobs[0].salaryMaxKEuros).toBeNull();
+    });
+  });
+
+  describe('getSourceName', () => {
+    it('should return the correct source name', () => {
+      expect(api.getSourceName()).toBe('france_travail');
     });
   });
 });

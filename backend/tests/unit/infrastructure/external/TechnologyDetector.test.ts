@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from '@jest/globals';
-import { TechnologyDetector } from './TechnologyDetector';
+import { TechnologyDetector } from '../../../../src/infrastructure/external/TechnologyDetector';
 
 describe('TechnologyDetector', () => {
   let detector: TechnologyDetector;
