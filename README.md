@@ -6,12 +6,8 @@ Visual analytics platform showing real-time technology demand across French regi
 
 ## Architecture
 
-- Clean Architecture (Domain-Driven Design principles)
+- Clean Architecture
 - Frontend: React + TypeScript + Vite
 - Backend: Node.js + Express + TypeScript
 - Database: PostgreSQL (Supabase)
 - Cache: Redis (Upstash)
-
-## Project Structure
-
-See `/docs/ARCHITECTURE.md` for detailed architecture documentation.
