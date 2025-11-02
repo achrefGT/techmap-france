@@ -7,7 +7,7 @@ import { IRegionRepository } from '../../domain/repositories/IRegionRepository';
 import { ITechnologyRepository } from '../../domain/repositories/ITechnologyRepository';
 import { experienceDetector } from '../../infrastructure/external/ExperienceDetector';
 import { techDetector } from '../../infrastructure/external/TechnologyDetector';
-import { TechnologyCategorizer } from './TechnologyCategorizer';
+import { TechnologyCategorizer } from '../../application/helpers/TechnologyCategorizer';
 
 export interface IngestResult {
   total: number;
