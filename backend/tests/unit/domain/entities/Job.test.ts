@@ -368,33 +368,4 @@ describe('Job Entity', () => {
       expect(job.isFromSource('indeed')).toBe(false);
     });
   });
-
-  describe('toDTO Method', () => {
-    it('should return complete DTO with all fields', () => {
-      const job = createJob();
-      const dto = job.toDTO();
-
-      expect(dto.id).toBe('1');
-      expect(dto.title).toBe('React Developer');
-      expect(dto.company).toBe('TechCorp');
-      expect(dto.salary).toBeDefined();
-      expect(dto.salary?.min).toBe(50);
-      expect(dto.salary?.max).toBe(70);
-      expect(dto.salary?.currency).toBe('EUR');
-      expect(dto.experienceCategory).toBe('mid');
-      expect(dto.qualityScore).toBeDefined();
-      expect(dto.isRecent).toBeDefined();
-      expect(dto.isExpired).toBeDefined();
-    });
-
-    it('should return null salary when not specified', () => {
-      const job = createJob({
-        salaryMinKEuros: null,
-        salaryMaxKEuros: null,
-      });
-      const dto = job.toDTO();
-
-      expect(dto.salary).toBeNull();
-    });
-  });
 });

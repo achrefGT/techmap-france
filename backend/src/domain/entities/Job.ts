@@ -1,5 +1,4 @@
 import { JOB_CONFIG, ExperienceLevel } from '../constants/JobConfig';
-import { SALARY_CONFIG } from '../constants/SalaryConfig';
 import { DomainError, DomainErrorCode } from '../errors/DomainErrors';
 
 /**
@@ -278,42 +277,6 @@ export class Job {
     if (!this.sourceUrl || (other.sourceUrl && other.sourceUrl.length > this.sourceUrl.length)) {
       this.sourceUrl = other.sourceUrl;
     }
-  }
-
-  // Return structured data (NO formatting/localization)
-  toDTO() {
-    return {
-      id: this.id,
-      title: this.title,
-      company: this.company,
-      description: this.description,
-      technologies: this.technologies,
-      location: this.location,
-      regionId: this.regionId,
-      isRemote: this.isRemote,
-      salary:
-        this.salaryMinKEuros || this.salaryMaxKEuros
-          ? {
-              min: this.salaryMinKEuros,
-              max: this.salaryMaxKEuros,
-              unit: SALARY_CONFIG.UNIT,
-              currency: 'EUR',
-            }
-          : null,
-      experienceLevel: this.experienceLevel,
-      experienceCategory: this.experienceCategory,
-      sourceApi: this.sourceApi,
-      sourceApis: this.sourceApis,
-      externalId: this.externalId,
-      sourceUrl: this.sourceUrl,
-      postedDate: this.postedDate.toISOString(),
-      isActive: this.isActive,
-      qualityScore: this.calculateQualityScore(),
-      isRecent: this.isRecent(),
-      isExpired: this.isExpired(),
-      createdAt: this.createdAt.toISOString(),
-      updatedAt: this.updatedAt.toISOString(),
-    };
   }
 
   // Generate unique deduplication key (source-specific)
