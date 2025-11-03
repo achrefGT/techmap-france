@@ -1,20 +1,26 @@
 import { JOB_CONFIG } from '../../domain/constants/JobConfig';
 import { Job } from '../../domain/entities/Job';
 import { Region } from '../../domain/entities/Region';
-import { Technology } from '../../domain/entities/Technology';
 import { IJobRepository } from '../../domain/repositories/IJobRepository';
 import { IRegionRepository } from '../../domain/repositories/IRegionRepository';
 import { ITechnologyRepository } from '../../domain/repositories/ITechnologyRepository';
 import { experienceDetector } from '../../infrastructure/external/ExperienceDetector';
 import { techDetector } from '../../infrastructure/external/TechnologyDetector';
-import { TechnologyCategorizer } from '../../application/helpers/TechnologyCategorizer';
+import { IngestResultMapper } from '../mappers/IngestResultMapper';
+import { IngestStatsDTO, BatchIngestResultDTO, IngestResultDTO } from '../dtos/IngestResultDTO';
 
+/**
+ * Internal result type (used within the service before mapping to DTO)
+ */
 export interface IngestResult {
   total: number;
   inserted: number;
   updated: number;
   failed: number;
   errors: string[];
+  startTime?: Date;
+  endTime?: Date;
+  sourceApi?: string;
 }
 
 /**
@@ -36,117 +42,485 @@ export interface RawJobData {
   postedDate: Date | string;
 }
 
+/**
+ * Logger interface for dependency injection
+ */
+export interface ILogger {
+  info(message: string, context?: Record<string, any>): void;
+  warn(message: string, context?: Record<string, any>): void;
+  error(message: string, context?: Record<string, any>): void;
+}
+
+/**
+ * Metrics interface for dependency injection
+ */
+export interface IMetrics {
+  increment(metric: string, tags?: Record<string, string | number>): void;
+  timing(metric: string, duration: number, tags?: Record<string, string | number>): void;
+  gauge(metric: string, value: number, tags?: Record<string, string | number>): void;
+}
+
+/**
+ * Service options
+ */
+export interface JobIngestionServiceOptions {
+  cacheTechnologies?: boolean;
+  logger?: ILogger;
+  metrics?: IMetrics;
+  maxRetries?: number;
+  retryDelayMs?: number;
+}
+
+/**
+ * Job Ingestion Service
+ *
+ * Orchestrates the import pipeline:
+ * 1. Transform raw API data to domain entities
+ * 2. Detect technologies and experience levels (via infrastructure)
+ * 3. Validate detected technologies against known technologies database
+ * 4. Filter by quality standards
+ * 5. Enrich with regions
+ * 6. Save to repository (DB handles same-source duplicates via unique constraint)
+ *
+ * NOTE: Technologies MUST exist in the database before ingestion.
+ * Jobs with unknown technologies will have those technologies filtered out.
+ * Jobs with no valid technologies after filtering are rejected.
+ */
 export class JobIngestionService {
+  private validTechnologyNames: Set<string> | null = null;
+  private technologyLoadPromise: Promise<void> | null = null; // Prevents concurrent loads
+  private cacheTechnologies: boolean;
+  private logger: ILogger;
+  private metrics: IMetrics;
+  private maxRetries: number;
+  private retryDelayMs: number;
+
   constructor(
     private jobRepository: IJobRepository,
     private technologyRepository: ITechnologyRepository,
-    private regionRepository: IRegionRepository
-  ) {}
+    private regionRepository: IRegionRepository,
+    options?: JobIngestionServiceOptions
+  ) {
+    this.cacheTechnologies = options?.cacheTechnologies ?? true;
+    this.logger = options?.logger || this.createNoOpLogger();
+    this.metrics = options?.metrics || this.createNoOpMetrics();
+    this.maxRetries = options?.maxRetries ?? 3;
+    this.retryDelayMs = options?.retryDelayMs ?? 1000;
+  }
 
   /**
-   * Main ingestion pipeline
-   * 1. Transform raw data to domain entities (with detection)
-   * 2. Filter by quality
-   * 3. Deduplicate
-   * 4. Enrich with regions
-   * 5. Ensure technologies exist
-   * 6. Save to repository
+   * Main ingestion pipeline with detailed statistics
+   * Returns IngestStatsDTO with comprehensive metrics
    */
-  async ingestJobs(rawJobs: RawJobData[]): Promise<IngestResult> {
+  async ingestJobsWithStats(rawJobs: RawJobData[]): Promise<IngestStatsDTO> {
+    const startTime = new Date();
+    const sourceApi = rawJobs[0]?.sourceApi || 'unknown';
+
+    this.logger.info('Ingestion started', {
+      count: rawJobs.length,
+      sourceApi,
+    });
+
     const result: IngestResult = {
       total: rawJobs.length,
       inserted: 0,
       updated: 0,
       failed: 0,
       errors: [],
+      startTime,
+      sourceApi,
     };
 
-    // Step 1: Transform raw data to domain entities (infrastructure detects here)
-    const jobs = await this.transformToDomainEntities(rawJobs, result);
+    try {
+      // Load valid technologies once at the start (thread-safe)
+      await this.loadValidTechnologies();
 
-    // Step 2: Filter quality jobs
-    const qualityJobs = jobs.filter(
-      job => job.calculateQualityScore() >= JOB_CONFIG.MIN_QUALITY_SCORE
-    );
+      // Track discovered unknown technologies for reporting
+      const unknownTechnologies: string[] = [];
+      const unknownTechSet = new Set<string>();
 
-    // Step 3: Deduplicate using proper keys
-    const uniqueJobs = this.deduplicateJobs(qualityJobs);
+      // Step 1: Transform raw data to domain entities (validates technologies)
+      const jobs = await this.transformToDomainEntities(rawJobs, result, unknownTechSet);
 
-    // Step 4: Enrich with regions (parallelized)
-    const enrichedJobs = await this.enrichWithRegions(uniqueJobs);
+      // Track unknown technologies for stats
+      unknownTechnologies.push(...Array.from(unknownTechSet));
 
-    // Step 5: Ensure technologies exist (parallelized)
-    await this.ensureTechnologiesExist(enrichedJobs);
+      // Step 2: Filter quality jobs
+      const qualityJobs = jobs.filter(
+        job => job.calculateQualityScore() >= JOB_CONFIG.MIN_QUALITY_SCORE
+      );
 
-    // Step 6: Save jobs (consider batching for production)
-    for (const job of enrichedJobs) {
+      this.logger.info('Quality filtering complete', {
+        total: jobs.length,
+        qualityJobs: qualityJobs.length,
+        filtered: jobs.length - qualityJobs.length,
+      });
+
+      // Step 3: Enrich with regions
+      const enrichedJobs = await this.enrichWithRegions(qualityJobs);
+
+      // Step 4: Save jobs with bulk operation if available
+      await this.saveJobs(enrichedJobs, result);
+
+      result.endTime = new Date();
+      const duration = result.endTime.getTime() - startTime.getTime();
+
+      // Log metrics
+      this.metrics.increment('jobs.ingested.total', { sourceApi });
+      this.metrics.increment('jobs.ingested.inserted', { sourceApi, count: result.inserted });
+      this.metrics.increment('jobs.ingested.updated', { sourceApi, count: result.updated });
+      this.metrics.increment('jobs.ingested.failed', { sourceApi, count: result.failed });
+      this.metrics.timing('jobs.ingestion.duration', duration, { sourceApi });
+      this.metrics.gauge('jobs.ingestion.unknown_technologies', unknownTechnologies.length, {
+        sourceApi,
+      });
+
+      this.logger.info('Ingestion completed', {
+        sourceApi,
+        total: result.total,
+        inserted: result.inserted,
+        updated: result.updated,
+        failed: result.failed,
+        duration: `${duration}ms`,
+        unknownTechnologies: unknownTechnologies.length,
+      });
+
+      // Return detailed statistics using mapper
+      return IngestResultMapper.toStatsDTO(result, enrichedJobs, unknownTechnologies);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      this.logger.error('Ingestion failed', {
+        sourceApi,
+        error: errorMessage,
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+
+      this.metrics.increment('jobs.ingestion.error', { sourceApi });
+
+      throw error;
+    }
+  }
+
+  /**
+   * Simple ingestion (backward compatibility)
+   * Returns basic IngestResultDTO
+   */
+  async ingestJobs(rawJobs: RawJobData[]): Promise<IngestResultDTO> {
+    const stats = await this.ingestJobsWithStats(rawJobs);
+    return stats.result;
+  }
+
+  /**
+   * Batch processing for large datasets
+   * Returns BatchIngestResultDTO with comprehensive statistics
+   */
+  async ingestJobsInBatches(
+    rawJobs: RawJobData[],
+    batchSize: number = JOB_CONFIG.BATCH.IMPORT_BATCH_SIZE
+  ): Promise<BatchIngestResultDTO> {
+    const batchResults: IngestResult[] = [];
+    const totalBatches = Math.ceil(rawJobs.length / batchSize);
+
+    this.logger.info('Batch ingestion started', {
+      totalJobs: rawJobs.length,
+      batchSize,
+      totalBatches,
+    });
+
+    // Load valid technologies once before processing batches (thread-safe)
+    await this.loadValidTechnologies();
+
+    for (let i = 0; i < rawJobs.length; i += batchSize) {
+      const batchNumber = Math.floor(i / batchSize) + 1;
+      const startTime = new Date();
+      const batch = rawJobs.slice(i, i + batchSize);
+
+      this.logger.info('Processing batch', {
+        batchNumber,
+        totalBatches,
+        batchSize: batch.length,
+      });
+
+      const result: IngestResult = {
+        total: batch.length,
+        inserted: 0,
+        updated: 0,
+        failed: 0,
+        errors: [],
+        startTime,
+        sourceApi: batch[0]?.sourceApi,
+      };
+
+      const unknownTechSet = new Set<string>();
+
       try {
-        const existing = await this.jobRepository.findById(job.id);
+        // Process batch
+        const jobs = await this.transformToDomainEntities(batch, result, unknownTechSet);
+        const qualityJobs = jobs.filter(
+          job => job.calculateQualityScore() >= JOB_CONFIG.MIN_QUALITY_SCORE
+        );
+        const enrichedJobs = await this.enrichWithRegions(qualityJobs);
 
-        if (existing) {
-          await this.jobRepository.save(job);
-          result.updated++;
-        } else {
-          await this.jobRepository.save(job);
-          result.inserted++;
-        }
+        // Save jobs
+        await this.saveJobs(enrichedJobs, result);
+
+        result.endTime = new Date();
+        batchResults.push(result);
+
+        const duration = result.endTime.getTime() - startTime.getTime();
+        this.logger.info('Batch completed', {
+          batchNumber,
+          inserted: result.inserted,
+          updated: result.updated,
+          failed: result.failed,
+          duration: `${duration}ms`,
+        });
       } catch (error) {
-        result.failed++;
         const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-        result.errors.push(`Failed to save job ${job.id}: ${errorMessage}`);
+        this.logger.error('Batch processing failed', {
+          batchNumber,
+          error: errorMessage,
+        });
+
+        result.errors.push(`Batch ${batchNumber} failed: ${errorMessage}`);
+        result.failed = batch.length;
+        result.endTime = new Date();
+        batchResults.push(result);
       }
     }
 
-    return result;
+    // Use mapper to create comprehensive batch DTO
+    return IngestResultMapper.toBatchDTO(batchResults);
+  }
+
+  /**
+   * Load and cache valid technology names from database (thread-safe)
+   * Uses a promise to prevent concurrent loads
+   */
+  private async loadValidTechnologies(): Promise<void> {
+    // Skip if caching is enabled and already loaded
+    if (this.cacheTechnologies && this.validTechnologyNames !== null) {
+      return;
+    }
+
+    // If a load is already in progress, wait for it
+    if (this.technologyLoadPromise !== null) {
+      await this.technologyLoadPromise;
+      return;
+    }
+
+    // Start the load and store the promise
+    this.technologyLoadPromise = (async () => {
+      try {
+        this.logger.info('Loading valid technologies from database');
+        const technologies = await this.technologyRepository.findAll();
+
+        // Atomic replacement: create new Set and assign
+        const newCache = new Set(technologies.map(t => t.name));
+        this.validTechnologyNames = newCache;
+
+        this.logger.info('Valid technologies loaded', {
+          count: newCache.size,
+        });
+
+        this.metrics.gauge('jobs.valid_technologies.count', newCache.size);
+      } finally {
+        // Clear the promise so future calls can load again if needed
+        this.technologyLoadPromise = null;
+      }
+    })();
+
+    await this.technologyLoadPromise;
+  }
+
+  /**
+   * Reload valid technologies from database
+   * Call this after adding new technologies to the database
+   */
+  async reloadTechnologies(): Promise<void> {
+    this.logger.info('Reloading technologies');
+
+    // Clear existing cache and load promise
+    this.validTechnologyNames = null;
+    this.technologyLoadPromise = null;
+
+    await this.loadValidTechnologies();
+  }
+
+  /**
+   * Clear the technology cache
+   * Next ingestion will reload technologies from database
+   */
+  clearTechnologyCache(): void {
+    this.logger.info('Clearing technology cache');
+    this.validTechnologyNames = null;
+    this.technologyLoadPromise = null;
+  }
+
+  /**
+   * Filter technologies that exist in the database
+   * Tech detector should return exact names matching database
+   * Unknown technologies are tracked for reporting only
+   */
+  private filterValidTechnologies(
+    detectedTechnologies: string[],
+    unknownTechSet: Set<string>
+  ): string[] {
+    if (!this.validTechnologyNames) {
+      throw new Error('Valid technologies not loaded. Call loadValidTechnologies first.');
+    }
+
+    const validTechs: string[] = [];
+
+    for (const tech of detectedTechnologies) {
+      if (this.validTechnologyNames.has(tech)) {
+        validTechs.push(tech);
+      } else {
+        unknownTechSet.add(tech);
+      }
+    }
+
+    return validTechs;
+  }
+
+  /**
+   * Check if error is a duplicate key constraint violation
+   */
+  private isDuplicateError(error: unknown): boolean {
+    if (typeof error !== 'object' || error === null) {
+      return false;
+    }
+
+    const err = error as any;
+
+    // PostgreSQL unique constraint violation
+    if (err.code === '23505') return true;
+
+    // Generic duplicate key error messages
+    const errorMessage = err.message?.toLowerCase() || '';
+    return (
+      errorMessage.includes('duplicate key') ||
+      errorMessage.includes('unique constraint') ||
+      errorMessage.includes('duplicate entry')
+    );
+  }
+
+  /**
+   * Save jobs to repository with error handling
+   * Uses bulk operation if available, falls back to individual saves
+   */
+  private async saveJobs(jobs: Job[], result: IngestResult): Promise<void> {
+    // Check if repository supports bulk operations
+    if ('bulkUpsert' in this.jobRepository && typeof this.jobRepository.bulkUpsert === 'function') {
+      try {
+        const bulkResult = await (this.jobRepository as any).bulkUpsert(jobs);
+        result.inserted = bulkResult.inserted || 0;
+        result.updated = bulkResult.updated || 0;
+        result.failed = bulkResult.failed || 0;
+        if (bulkResult.errors) {
+          result.errors.push(...bulkResult.errors);
+        }
+        return;
+      } catch (error) {
+        this.logger.warn('Bulk upsert failed, falling back to individual saves', {
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    }
+
+    // Fallback: individual saves
+    for (const job of jobs) {
+      try {
+        await this.jobRepository.save(job); // Upsert: insert or update if duplicate
+        result.inserted++;
+      } catch (error) {
+        if (this.isDuplicateError(error)) {
+          // Same-source duplicate caught by DB unique constraint (sourceApi + externalId)
+          result.updated++;
+        } else {
+          result.failed++;
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+          result.errors.push(`Failed to save job ${job.id}: ${errorMessage}`);
+
+          this.logger.warn('Job save failed', {
+            jobId: job.id,
+            error: errorMessage,
+          });
+        }
+      }
+    }
   }
 
   /**
    * Transform raw API data to domain entities
    * Uses infrastructure layer to detect technologies and experience
+   * Validates technologies against database and filters unknown ones
+   * Includes retry logic for external detector calls
    */
   private async transformToDomainEntities(
     rawJobs: RawJobData[],
-    result: IngestResult
+    result: IngestResult,
+    unknownTechSet: Set<string>
   ): Promise<Job[]> {
     const jobs: Job[] = [];
 
     for (const raw of rawJobs) {
       try {
-        // Infrastructure layer: Detect technologies from description
-        const technologies = techDetector.detect(raw.description);
+        // Infrastructure layer: Detect technologies from description (with retry)
+        const detectedTechnologies = await this.retryOperation(
+          () => techDetector.detect(raw.description),
+          `Tech detection for job ${raw.id}`
+        );
 
-        // Skip if no technologies detected
-        if (technologies.length === 0) {
+        // Validate detected technologies against known technologies
+        const validTechnologies = this.filterValidTechnologies(
+          detectedTechnologies,
+          unknownTechSet
+        );
+
+        // Skip if no valid technologies after filtering
+        if (validTechnologies.length === 0) {
           result.failed++;
-          result.errors.push(`No technologies detected for job ${raw.id}`);
+          if (detectedTechnologies.length > 0) {
+            const errorMsg = `No valid technologies found for job ${raw.id} (detected: ${detectedTechnologies.join(', ')})`;
+            result.errors.push(errorMsg);
+            this.logger.warn('Job rejected: no valid technologies', {
+              jobId: raw.id,
+              detectedTechnologies,
+            });
+          } else {
+            result.errors.push(`No technologies detected for job ${raw.id}`);
+            this.logger.warn('Job rejected: no technologies detected', {
+              jobId: raw.id,
+            });
+          }
           continue;
         }
 
-        // Infrastructure layer: Detect experience level
-        const experienceCategory = experienceDetector.detect(
-          raw.title,
-          raw.experienceLevel,
-          raw.description
+        // Infrastructure layer: Detect experience level (with retry)
+        const experienceCategory = await this.retryOperation(
+          () => experienceDetector.detect(raw.title, raw.experienceLevel, raw.description),
+          `Experience detection for job ${raw.id}`
         );
 
         // Ensure postedDate is a Date object
         const postedDate =
           raw.postedDate instanceof Date ? raw.postedDate : new Date(raw.postedDate);
 
-        // Create domain entity with detected data
+        // Create domain entity with validated technologies
         const job = new Job(
           raw.id,
           raw.title,
           raw.company,
           raw.description,
-          technologies,
+          validTechnologies, // Only valid technologies
           raw.location,
           null, // regionId - will be enriched later
           raw.isRemote,
           raw.salaryMin,
           raw.salaryMax,
           raw.experienceLevel,
-          experienceCategory, // ← Detected by infrastructure
+          experienceCategory, // Detected by infrastructure
           raw.sourceApi,
           raw.externalId,
           raw.sourceUrl,
@@ -158,29 +532,15 @@ export class JobIngestionService {
         result.failed++;
         const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
         result.errors.push(`Failed to transform job ${raw.id}: ${errorMessage}`);
+
+        this.logger.error('Job transformation failed', {
+          jobId: raw.id,
+          error: errorMessage,
+        });
       }
     }
 
     return jobs;
-  }
-
-  /**
-   * Deduplicate jobs using sourceApi + externalId
-   * Keeps the newest version if duplicates found
-   */
-  private deduplicateJobs(jobs: Job[]): Job[] {
-    const seen = new Map<string, Job>();
-
-    for (const job of jobs) {
-      const key = job.getDeduplicationKey();
-
-      // Keep newest version if duplicate
-      if (!seen.has(key) || seen.get(key)!.postedDate < job.postedDate) {
-        seen.set(key, job);
-      }
-    }
-
-    return Array.from(seen.values());
   }
 
   /**
@@ -192,9 +552,17 @@ export class JobIngestionService {
     // Parallelize region detection
     await Promise.all(
       jobsNeedingRegion.map(async job => {
-        const region = await this.detectRegion(job.location);
-        if (region) {
-          job.regionId = region.id;
+        try {
+          const region = await this.detectRegion(job.location);
+          if (region) {
+            job.regionId = region.id;
+          }
+        } catch (error) {
+          this.logger.warn('Region detection failed', {
+            jobId: job.id,
+            location: job.location,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
         }
       })
     );
@@ -238,73 +606,63 @@ export class JobIngestionService {
   }
 
   /**
-   * Ensure all detected technologies exist in database (parallelized)
-   * Creates missing technologies with automatic categorization
+   * Retry operation with exponential backoff
    */
-  private async ensureTechnologiesExist(jobs: Job[]): Promise<void> {
-    const allTechs = new Set<string>();
-    jobs.forEach(job => job.technologies.forEach(tech => allTechs.add(tech)));
+  private async retryOperation<T>(
+    operation: () => T | Promise<T>,
+    operationName: string
+  ): Promise<T> {
+    let lastError: Error | undefined;
 
-    // Check all technologies in parallel
-    await Promise.all(
-      Array.from(allTechs).map(async techName => {
-        const existing = await this.technologyRepository.findByName(techName);
-        if (!existing) {
-          const category = TechnologyCategorizer.categorize(techName);
-          const newTech = Technology.create(techName, category);
-          await this.technologyRepository.save(newTech);
+    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error('Unknown error');
+
+        if (attempt < this.maxRetries) {
+          const delay = this.retryDelayMs * Math.pow(2, attempt - 1);
+          this.logger.warn('Operation failed, retrying', {
+            operation: operationName,
+            attempt,
+            maxRetries: this.maxRetries,
+            nextRetryIn: `${delay}ms`,
+            error: lastError.message,
+          });
+
+          await new Promise(resolve => setTimeout(resolve, delay));
         }
-      })
-    );
-  }
-
-  /**
-   * Advanced: Fuzzy deduplication across different APIs
-   * Merges jobs from different sources that are likely the same position
-   */
-  async deduplicateAcrossSources(jobs: Job[]): Promise<Job[]> {
-    const fuzzyMap = new Map<string, Job>();
-
-    for (const job of jobs) {
-      const fuzzyKey = job.getFuzzyDeduplicationKey();
-
-      const existing = fuzzyMap.get(fuzzyKey);
-      if (existing) {
-        // Merge data from both jobs
-        existing.mergeFrom(job);
-      } else {
-        fuzzyMap.set(fuzzyKey, job);
       }
     }
 
-    return Array.from(fuzzyMap.values());
+    this.logger.error('Operation failed after all retries', {
+      operation: operationName,
+      attempts: this.maxRetries,
+      error: lastError?.message,
+    });
+
+    throw lastError || new Error(`${operationName} failed after ${this.maxRetries} attempts`);
   }
 
   /**
-   * Batch processing for large datasets
+   * Create no-op logger for when none is provided
    */
-  async ingestJobsInBatches(
-    rawJobs: RawJobData[],
-    batchSize: number = JOB_CONFIG.BATCH.IMPORT_BATCH_SIZE
-  ): Promise<IngestResult> {
-    const totalResult: IngestResult = {
-      total: rawJobs.length,
-      inserted: 0,
-      updated: 0,
-      failed: 0,
-      errors: [],
+  private createNoOpLogger(): ILogger {
+    return {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
     };
+  }
 
-    for (let i = 0; i < rawJobs.length; i += batchSize) {
-      const batch = rawJobs.slice(i, i + batchSize);
-      const batchResult = await this.ingestJobs(batch);
-
-      totalResult.inserted += batchResult.inserted;
-      totalResult.updated += batchResult.updated;
-      totalResult.failed += batchResult.failed;
-      totalResult.errors.push(...batchResult.errors);
-    }
-
-    return totalResult;
+  /**
+   * Create no-op metrics for when none is provided
+   */
+  private createNoOpMetrics(): IMetrics {
+    return {
+      increment: () => {},
+      timing: () => {},
+      gauge: () => {},
+    };
   }
 }
