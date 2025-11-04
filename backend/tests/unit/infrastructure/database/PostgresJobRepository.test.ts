@@ -219,7 +219,7 @@ describe('PostgresJobRepository', () => {
   });
 
   describe('saveMany', () => {
-    it('should batch insert multiple jobs', async () => {
+    it('should batch insert new jobs and return correct counts', async () => {
       const jobs = [
         new Job(
           'job-1',
@@ -262,6 +262,7 @@ describe('PostgresJobRepository', () => {
       ];
 
       mockQuery
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as any) // Check existing jobs (none found)
         .mockResolvedValueOnce({ rows: [], rowCount: 2 } as any) // Batch insert jobs
         .mockResolvedValueOnce({
           rows: [
@@ -272,11 +273,15 @@ describe('PostgresJobRepository', () => {
         } as any) // Get technologies
         .mockResolvedValueOnce({ rows: [], rowCount: 2 } as any); // Batch insert technologies
 
-      await repository.saveMany(jobs);
+      const result = await repository.saveMany(jobs);
 
-      expect(mockQuery).toHaveBeenCalledTimes(3);
+      expect(result.inserted).toBe(2);
+      expect(result.updated).toBe(0);
+      expect(result.failed).toBe(0);
+      expect(result.errors).toEqual([]);
+      expect(mockQuery).toHaveBeenCalledTimes(4);
 
-      const insertCall = mockQuery.mock.calls[0];
+      const insertCall = mockQuery.mock.calls[1];
       const sql = insertCall[0] as string;
       const params = insertCall[1] as any[];
 
@@ -285,9 +290,113 @@ describe('PostgresJobRepository', () => {
       expect(params[0]).toBe('job-1');
     });
 
+    it('should detect updated jobs and return correct counts', async () => {
+      const jobs = [
+        new Job(
+          'job-1',
+          'Engineer 1',
+          'Company A',
+          'Desc 1',
+          ['React'],
+          'Paris',
+          1,
+          false,
+          50,
+          70,
+          'mid',
+          'mid',
+          'indeed',
+          'job-1-external',
+          'https://example.com/1',
+          new Date('2024-01-15'),
+          true
+        ),
+        new Job(
+          'job-2',
+          'Engineer 2',
+          'Company B',
+          'Desc 2',
+          ['Node.js'],
+          'Lyon',
+          2,
+          true,
+          60,
+          80,
+          'senior',
+          'senior',
+          'linkedin',
+          'job-2-external',
+          'https://example.com/2',
+          new Date('2024-01-16'),
+          true
+        ),
+      ];
+
+      mockQuery
+        .mockResolvedValueOnce({
+          rows: [{ id: 'job-1' }],
+          rowCount: 1,
+        } as any) // Check existing jobs (job-1 exists)
+        .mockResolvedValueOnce({ rows: [], rowCount: 2 } as any) // Batch insert/update jobs
+        .mockResolvedValueOnce({
+          rows: [
+            { id: 1, name: 'React' },
+            { id: 2, name: 'Node.js' },
+          ],
+          rowCount: 2,
+        } as any) // Get technologies
+        .mockResolvedValueOnce({ rows: [], rowCount: 2 } as any); // Batch insert technologies
+
+      const result = await repository.saveMany(jobs);
+
+      expect(result.inserted).toBe(1); // job-2 is new
+      expect(result.updated).toBe(1); // job-1 exists
+      expect(result.failed).toBe(0);
+      expect(result.errors).toEqual([]);
+    });
+
     it('should handle empty array', async () => {
-      await repository.saveMany([]);
+      const result = await repository.saveMany([]);
+
+      expect(result.inserted).toBe(0);
+      expect(result.updated).toBe(0);
+      expect(result.failed).toBe(0);
+      expect(result.errors).toEqual([]);
       expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('should handle bulk operation failure', async () => {
+      const jobs = [
+        new Job(
+          'job-1',
+          'Engineer 1',
+          'Company A',
+          'Desc 1',
+          ['React'],
+          'Paris',
+          1,
+          false,
+          50,
+          70,
+          'mid',
+          'mid',
+          'indeed',
+          'job-1-external',
+          'https://example.com/1',
+          new Date('2024-01-15'),
+          true
+        ),
+      ];
+
+      mockQuery.mockRejectedValueOnce(new Error('Database connection failed'));
+
+      const result = await repository.saveMany(jobs);
+
+      expect(result.inserted).toBe(0);
+      expect(result.updated).toBe(0);
+      expect(result.failed).toBe(1);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toContain('Bulk save failed: Database connection failed');
     });
   });
 

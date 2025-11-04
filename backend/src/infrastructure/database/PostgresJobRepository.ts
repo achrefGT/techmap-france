@@ -1,4 +1,8 @@
-import { IJobRepository, JobFilters } from '../../domain/repositories/IJobRepository';
+import {
+  IJobRepository,
+  JobFilters,
+  BulkSaveResult,
+} from '../../domain/repositories/IJobRepository';
 import { Job } from '../../domain/entities/Job';
 import { ExperienceLevel } from '../../domain/constants/JobConfig';
 import { query } from './connection';
@@ -71,55 +75,82 @@ export class PostgresJobRepository implements IJobRepository {
     }
   }
 
-  async saveMany(jobs: Job[]): Promise<void> {
-    if (jobs.length === 0) return;
+  async saveMany(jobs: Job[]): Promise<BulkSaveResult> {
+    const result: BulkSaveResult = {
+      inserted: 0,
+      updated: 0,
+      failed: 0,
+      errors: [],
+    };
 
-    // Batch insert jobs
-    const jobValues = jobs
-      .map((_, i) => {
-        const base = i * 16;
-        return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11}, $${base + 12}, $${base + 13}, $${base + 14}, $${base + 15}, $${base + 16})`;
-      })
-      .join(',');
+    if (jobs.length === 0) return result;
 
-    const jobParams = jobs.flatMap(job => [
-      job.id,
-      job.title,
-      job.company,
-      job.description,
-      job.location,
-      job.regionId,
-      job.isRemote,
-      job.salaryMinKEuros,
-      job.salaryMaxKEuros,
-      job.experienceLevel,
-      job.experienceCategory,
-      job.sourceApi,
-      job.externalId,
-      job.sourceUrl,
-      job.postedDate,
-      job.sourceApis,
-    ]);
+    try {
+      // Get existing job IDs to determine inserts vs updates
+      const jobIds = jobs.map(j => j.id);
+      const existingResult = await query('SELECT id FROM jobs WHERE id = ANY($1)', [jobIds]);
+      const existingIds = new Set(existingResult.rows.map(row => row.id));
 
-    const jobSql = `
-      INSERT INTO jobs (id, title, company, description, location_raw, region_id,
-        is_remote, salary_min, salary_max, experience_level, experience_category,
-        source_api, external_id, source_url, posted_date, source_apis)
-      VALUES ${jobValues}
-      ON CONFLICT (id) DO UPDATE SET 
-        is_active = true, 
-        fetched_at = NOW(),
-        source_apis = EXCLUDED.source_apis
-    `;
+      // Count inserts and updates
+      result.inserted = jobs.filter(j => !existingIds.has(j.id)).length;
+      result.updated = jobs.filter(j => existingIds.has(j.id)).length;
 
-    await query(jobSql, jobParams);
+      // Batch insert/update jobs
+      const jobValues = jobs
+        .map((_, i) => {
+          const base = i * 16;
+          return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11}, $${base + 12}, $${base + 13}, $${base + 14}, $${base + 15}, $${base + 16})`;
+        })
+        .join(',');
 
-    // Batch insert technologies
-    const allTechs = jobs.flatMap(job => job.technologies.map(tech => ({ jobId: job.id, tech })));
+      const jobParams = jobs.flatMap(job => [
+        job.id,
+        job.title,
+        job.company,
+        job.description,
+        job.location,
+        job.regionId,
+        job.isRemote,
+        job.salaryMinKEuros,
+        job.salaryMaxKEuros,
+        job.experienceLevel,
+        job.experienceCategory,
+        job.sourceApi,
+        job.externalId,
+        job.sourceUrl,
+        job.postedDate,
+        job.sourceApis,
+      ]);
 
-    if (allTechs.length > 0) {
-      await this.saveTechnologiesBatch(allTechs);
+      const jobSql = `
+        INSERT INTO jobs (id, title, company, description, location_raw, region_id,
+          is_remote, salary_min, salary_max, experience_level, experience_category,
+          source_api, external_id, source_url, posted_date, source_apis)
+        VALUES ${jobValues}
+        ON CONFLICT (id) DO UPDATE SET 
+          is_active = true, 
+          fetched_at = NOW(),
+          source_apis = EXCLUDED.source_apis
+      `;
+
+      await query(jobSql, jobParams);
+
+      // Batch insert technologies
+      const allTechs = jobs.flatMap(job => job.technologies.map(tech => ({ jobId: job.id, tech })));
+
+      if (allTechs.length > 0) {
+        await this.saveTechnologiesBatch(allTechs);
+      }
+    } catch (error) {
+      // If bulk operation fails entirely, mark all as failed
+      result.failed = jobs.length;
+      result.inserted = 0;
+      result.updated = 0;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      result.errors.push(`Bulk save failed: ${errorMessage}`);
     }
+
+    return result;
   }
 
   async findRecent(days: number): Promise<Job[]> {

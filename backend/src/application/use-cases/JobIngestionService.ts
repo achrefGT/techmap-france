@@ -384,71 +384,18 @@ export class JobIngestionService {
   }
 
   /**
-   * Check if error is a duplicate key constraint violation
-   */
-  private isDuplicateError(error: unknown): boolean {
-    if (typeof error !== 'object' || error === null) {
-      return false;
-    }
-
-    const err = error as any;
-
-    // PostgreSQL unique constraint violation
-    if (err.code === '23505') return true;
-
-    // Generic duplicate key error messages
-    const errorMessage = err.message?.toLowerCase() || '';
-    return (
-      errorMessage.includes('duplicate key') ||
-      errorMessage.includes('unique constraint') ||
-      errorMessage.includes('duplicate entry')
-    );
-  }
-
-  /**
    * Save jobs to repository with error handling
-   * Uses bulk operation if available, falls back to individual saves
+   * Uses bulk operation
    */
   private async saveJobs(jobs: Job[], result: IngestResult): Promise<void> {
-    // Check if repository supports bulk operations
-    if ('bulkUpsert' in this.jobRepository && typeof this.jobRepository.bulkUpsert === 'function') {
-      try {
-        const bulkResult = await (this.jobRepository as any).bulkUpsert(jobs);
-        result.inserted = bulkResult.inserted || 0;
-        result.updated = bulkResult.updated || 0;
-        result.failed = bulkResult.failed || 0;
-        if (bulkResult.errors) {
-          result.errors.push(...bulkResult.errors);
-        }
-        return;
-      } catch (error) {
-        this.logger.warn('Bulk upsert failed, falling back to individual saves', {
-          error: error instanceof Error ? error.message : 'Unknown error',
-        });
-      }
+    if (jobs.length === 0) {
+      return; // Skip if no jobs to save
     }
-
-    // Fallback: individual saves
-    for (const job of jobs) {
-      try {
-        await this.jobRepository.save(job); // Upsert: insert or update if duplicate
-        result.inserted++;
-      } catch (error) {
-        if (this.isDuplicateError(error)) {
-          // Same-source duplicate caught by DB unique constraint (sourceApi + externalId)
-          result.updated++;
-        } else {
-          result.failed++;
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-          result.errors.push(`Failed to save job ${job.id}: ${errorMessage}`);
-
-          this.logger.warn('Job save failed', {
-            jobId: job.id,
-            error: errorMessage,
-          });
-        }
-      }
-    }
+    const bulkResult = await this.jobRepository.saveMany(jobs);
+    result.inserted = bulkResult.inserted;
+    result.updated = bulkResult.updated;
+    result.failed += bulkResult.failed;
+    result.errors.push(...bulkResult.errors);
   }
 
   /**
