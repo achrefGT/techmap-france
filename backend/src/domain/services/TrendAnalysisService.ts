@@ -1,8 +1,16 @@
-import { IStatsRepository } from '../../domain/repositories/IStatsRepository';
+import { IStatsRepository } from '../repositories/IStatsRepository';
+import {
+  TREND_CONFIG,
+  TrendAnalysisConfig,
+  mergeTrendConfig,
+  validateTrendConfig,
+} from '../constants/TrendConfig';
 
+/**
+ * Internal trend data structure
+ */
 export interface TechnologyTrend {
   technologyId: number;
-  technologyName?: string;
   currentCount: number;
   previousCount: number;
   growthRate: number;
@@ -10,54 +18,48 @@ export interface TechnologyTrend {
 }
 
 /**
- * Configuration for trend analysis thresholds
+ * Prediction result
  */
-export interface TrendAnalysisConfig {
-  // Rising technology thresholds
-  minGrowthPercentage: number; // Default: 10%
-  minAbsoluteGrowth: number; // Default: 5 jobs
-  minCurrentVolume: number; // Default: 10 jobs
-
-  // Data quality thresholds
-  minDataPoints: number; // Default: 2
-  minHistoricalMonths: number; // Default: 3
-
-  // Prediction settings
-  useMedianGrowth: boolean; // Default: false (use mean)
-  trimOutlierPercentage: number; // Default: 0 (no trimming)
+export interface TechnologyPrediction {
+  technologyId: number;
+  currentDemand: number;
+  predictedDemand: number;
+  months: number;
+  monthlyGrowthRate: number;
+  historicalDataPoints: number;
 }
 
 /**
- * Default configuration values
+ * Domain Service: Trend Analysis
+ *
+ * Encapsulates business logic for analyzing technology trends and predicting demand.
+ *
+ * Business Rules:
+ * - Rising: Growth > threshold AND absolute growth > minimum AND current volume > minimum
+ * - Declining: Decline > threshold AND absolute decline > minimum AND previous volume > minimum
+ * - Stable: Change within ±threshold AND current volume > minimum
+ * - Predictions: Requires minimum historical data points for reliability
  */
-const DEFAULT_CONFIG: TrendAnalysisConfig = {
-  minGrowthPercentage: 10,
-  minAbsoluteGrowth: 5,
-  minCurrentVolume: 10,
-  minDataPoints: 2,
-  minHistoricalMonths: 3,
-  useMedianGrowth: false,
-  trimOutlierPercentage: 0,
-};
-
 export class TrendAnalysisService {
-  private config: TrendAnalysisConfig;
+  private config: Required<TrendAnalysisConfig>;
 
   constructor(
     private statsRepository: IStatsRepository,
-    config?: Partial<TrendAnalysisConfig>
+    userConfig?: Partial<TrendAnalysisConfig>
   ) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = mergeTrendConfig(userConfig);
   }
 
   /**
    * Get rising technologies based on configurable thresholds
    * Returns technologies with significant growth
    */
-  async getRisingTechnologies(days: number = 7): Promise<TechnologyTrend[]> {
+  async getRisingTechnologies(
+    days: number = TREND_CONFIG.ANALYSIS_PERIODS.DEFAULT_DAYS
+  ): Promise<TechnologyTrend[]> {
     const trends = await this.analyzePeriodTrends(days);
 
-    // Filter based on configurable thresholds
+    // Business rule: What makes a technology "rising"?
     return trends.filter(
       t =>
         t.growthPercentage > this.config.minGrowthPercentage &&
@@ -67,7 +69,89 @@ export class TrendAnalysisService {
   }
 
   /**
-   * Helper method to analyze trends between two periods
+   * Get declining technologies (negative growth)
+   * Useful for identifying technologies losing market share
+   */
+  async getDecliningTechnologies(
+    days: number = TREND_CONFIG.ANALYSIS_PERIODS.DEFAULT_DAYS
+  ): Promise<TechnologyTrend[]> {
+    const trends = await this.analyzePeriodTrends(days);
+
+    // Business rule: What makes a technology "declining"?
+    return trends.filter(
+      t =>
+        t.growthPercentage < -this.config.minGrowthPercentage &&
+        Math.abs(t.growthRate) > this.config.minAbsoluteGrowth &&
+        t.previousCount > this.config.minCurrentVolume // Had meaningful volume before
+    );
+  }
+
+  /**
+   * Get stable technologies (low volatility)
+   * Technologies with consistent demand
+   */
+  async getStableTechnologies(
+    days: number = TREND_CONFIG.ANALYSIS_PERIODS.DEFAULT_DAYS
+  ): Promise<TechnologyTrend[]> {
+    const trends = await this.analyzePeriodTrends(days);
+
+    // Business rule: What makes a technology "stable"?
+    return trends.filter(
+      t =>
+        Math.abs(t.growthPercentage) <= TREND_CONFIG.STABLE_TECHNOLOGY.MAX_CHANGE_PERCENTAGE &&
+        t.currentCount > this.config.minCurrentVolume
+    );
+  }
+
+  /**
+   * Predict future demand using compound growth
+   * Validates minimum data requirements before prediction
+   */
+  async predictDemand(
+    techId: number,
+    months: number = TREND_CONFIG.PREDICTION.DEFAULT_PREDICTION_MONTHS
+  ): Promise<TechnologyPrediction> {
+    const history = await this.statsRepository.getHistoricalData(
+      techId,
+      Math.max(this.config.minHistoricalMonths, 6)
+    );
+
+    // Validate minimum data points
+    if (history.length < this.config.minDataPoints) {
+      const currentDemand = history[history.length - 1] || 0;
+      // Not enough data: return current demand (no growth prediction)
+      return {
+        technologyId: techId,
+        currentDemand,
+        predictedDemand: currentDemand,
+        months,
+        monthlyGrowthRate: 0,
+        historicalDataPoints: history.length,
+      };
+    }
+
+    const monthlyGrowthRate = this.config.useMedianGrowth
+      ? this.calculateMedianGrowthRate(history)
+      : this.calculateMeanGrowthRate(history);
+
+    const currentDemand = history[history.length - 1];
+
+    // Business logic: Compound growth formula
+    const predictedDemand = Math.round(currentDemand * Math.pow(1 + monthlyGrowthRate, months));
+
+    return {
+      technologyId: techId,
+      currentDemand,
+      predictedDemand,
+      months,
+      monthlyGrowthRate,
+      historicalDataPoints: history.length,
+    };
+  }
+
+  /**
+   * Analyze trends between two periods
+   * Compares current period vs previous period
    */
   private async analyzePeriodTrends(days: number): Promise<TechnologyTrend[]> {
     const now = new Date();
@@ -99,7 +183,8 @@ export class TrendAnalysisService {
 
       let growthPercentage: number;
       if (previousCount === 0) {
-        // New technology: use 100% if has meaningful volume, otherwise 0
+        // Business rule: New technology growth calculation
+        // Use 100% if has meaningful volume, otherwise 0
         growthPercentage = currentCount > this.config.minCurrentVolume ? 100 : 0;
       } else {
         growthPercentage = (growthRate / previousCount) * 100;
@@ -115,32 +200,6 @@ export class TrendAnalysisService {
     }
 
     return trends.sort((a, b) => b.growthPercentage - a.growthPercentage);
-  }
-
-  /**
-   * Predict future demand using compound growth
-   * Validates minimum data requirements before prediction
-   */
-  async predictDemand(techId: number, months: number): Promise<number> {
-    const history = await this.statsRepository.getHistoricalData(
-      techId,
-      Math.max(this.config.minHistoricalMonths, 6)
-    );
-
-    // Validate minimum data points
-    if (history.length < this.config.minDataPoints) {
-      // Not enough data: return current demand or 0
-      return history[history.length - 1] || 0;
-    }
-
-    const monthlyGrowthRate = this.config.useMedianGrowth
-      ? this.calculateMedianGrowthRate(history)
-      : this.calculateMeanGrowthRate(history);
-
-    const currentDemand = history[history.length - 1];
-
-    // Compound growth formula: demand * (1 + rate)^months
-    return Math.round(currentDemand * Math.pow(1 + monthlyGrowthRate, months));
   }
 
   /**
@@ -202,7 +261,8 @@ export class TrendAnalysisService {
         const growth = (current - previous) / previous;
         growthRates.push(growth);
       } else if (previous === 0 && current > 0) {
-        // New appearance: treat as 100% growth if meaningful
+        // Business rule: New appearance
+        // Treat as 100% growth if meaningful volume
         if (current >= this.config.minCurrentVolume) {
           growthRates.push(1.0); // 100% growth
         }
@@ -232,48 +292,17 @@ export class TrendAnalysisService {
   }
 
   /**
-   * Get declining technologies (negative growth)
-   * Useful for identifying technologies losing market share
-   */
-  async getDecliningTechnologies(days: number = 7): Promise<TechnologyTrend[]> {
-    const trends = await this.analyzePeriodTrends(days);
-
-    // Filter for significant declines
-    return trends.filter(
-      t =>
-        t.growthPercentage < -this.config.minGrowthPercentage &&
-        Math.abs(t.growthRate) > this.config.minAbsoluteGrowth &&
-        t.previousCount > this.config.minCurrentVolume // Had meaningful volume before
-    );
-  }
-
-  /**
-   * Get stable technologies (low volatility)
-   * Technologies with consistent demand
-   */
-  async getStableTechnologies(days: number = 7): Promise<TechnologyTrend[]> {
-    const trends = await this.analyzePeriodTrends(days);
-
-    // Stable: small percentage change but meaningful volume
-    const stabilityThreshold = 5; // Within ±5%
-    return trends.filter(
-      t =>
-        Math.abs(t.growthPercentage) <= stabilityThreshold &&
-        t.currentCount > this.config.minCurrentVolume
-    );
-  }
-
-  /**
    * Update configuration at runtime
    */
   updateConfig(config: Partial<TrendAnalysisConfig>): void {
-    this.config = { ...this.config, ...config };
+    validateTrendConfig(config);
+    this.config = mergeTrendConfig({ ...this.config, ...config });
   }
 
   /**
    * Get current configuration
    */
-  getConfig(): TrendAnalysisConfig {
+  getConfig(): Required<TrendAnalysisConfig> {
     return { ...this.config };
   }
 }
