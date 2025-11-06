@@ -7,6 +7,7 @@ export interface JobFilters {
   isRemote?: boolean;
   minSalary?: number;
   postedAfter?: Date;
+  isActive?: boolean;
 }
 
 export interface BulkSaveResult {
