@@ -344,7 +344,8 @@ describe('TechnologyService', () => {
         'CVL',
         'COR',
       ];
-      const regions = Array.from({ length: 15 }, (_, i) => i + 1);
+      // Only create as many regions as we have valid codes
+      const regions = Array.from({ length: 13 }, (_, i) => i + 1);
       const mockJobs = regions.map((regionId, i) =>
         createMockJob({
           id: String(i + 1),
@@ -355,7 +356,7 @@ describe('TechnologyService', () => {
       mockTechnologyRepository.findById.mockResolvedValue(mockTech);
       mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
       mockRegionRepository.findById.mockImplementation(async (id: number) => {
-        const codeIndex = (id - 1) % validRegionCodes.length;
+        const codeIndex = id - 1;
         return createMockRegion({
           id,
           name: `Region ${id}`,
