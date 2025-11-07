@@ -21,13 +21,35 @@ interface AdzunaJobResponse {
   };
   salary_min?: number;
   salary_max?: number;
+  salary_is_predicted?: string;
   redirect_url?: string;
   created?: string;
+  contract_type?: string;
+}
+
+/**
+ * Enum for salary prediction status
+ */
+export enum SalaryPredictionStatus {
+  ACTUAL = 'actual',
+  PREDICTED = 'predicted',
+  MISSING = 'missing',
+}
+
+/**
+ * Interface for normalized salary data
+ */
+export interface NormalizedSalary {
+  minKEuros: number | null;
+  maxKEuros: number | null;
+  isPredicted: SalaryPredictionStatus;
+  isReliable: boolean;
+  originalMin?: number;
+  originalMax?: number;
 }
 
 /**
  * DTO for job data from Adzuna API
- * This represents raw data before domain entity creation
  */
 export interface AdzunaJobDTO {
   externalId: string;
@@ -39,16 +61,37 @@ export interface AdzunaJobDTO {
   regionId: number | null;
   salaryMinKEuros: number | null;
   salaryMaxKEuros: number | null;
-  experienceLevel: null; // Always null - domain layer responsibility
+  salaryPredictionStatus: SalaryPredictionStatus;
+  salaryIsReliable: boolean;
+  experienceLevel: null;
   sourceUrl: string;
   postedDate: Date;
 }
 
 /**
- * Optional region repository interface for region lookups
+ * Optional region repository interface
  */
 interface RegionRepository {
   findByCode(code: string): Promise<number | null>;
+}
+
+/**
+ * Configuration for salary normalization
+ */
+interface SalaryNormalizationConfig {
+  // Daily rate thresholds (in euros)
+  minDailyRate: number;
+  maxDailyRate: number;
+
+  // Annual salary thresholds (in euros)
+  minAnnualSalary: number;
+  maxAnnualSalary: number;
+
+  // Maximum acceptable range multiplier (max/min ratio)
+  maxRangeRatio: number;
+
+  // Minimum acceptable salary for tech jobs (in k€)
+  minTechSalaryKEuros: number;
 }
 
 export class AdzunaAPI {
@@ -59,7 +102,16 @@ export class AdzunaAPI {
   private readonly RETRY_DELAY_MS = 1000;
   private readonly SOURCE_NAME = 'adzuna';
 
-  // Region mapping: normalized location string (without accents) -> region code
+  // Salary normalization configuration
+  private readonly salaryConfig: SalaryNormalizationConfig = {
+    minDailyRate: 100,
+    maxDailyRate: 1500,
+    minAnnualSalary: 20000,
+    maxAnnualSalary: 250000,
+    maxRangeRatio: 3.0,
+    minTechSalaryKEuros: 25,
+  };
+
   private regionCodeMapping: Map<string, string> = new Map([
     ['ile-de-france', 'IDF'],
     ['paris', 'IDF'],
@@ -86,6 +138,7 @@ export class AdzunaAPI {
   ]);
 
   private regionIdCache: Map<string, number> = new Map();
+  private regionLookupPromises: Map<string, Promise<number | null>> = new Map();
 
   constructor(
     private appId: string,
@@ -99,7 +152,6 @@ export class AdzunaAPI {
 
   /**
    * Fetch jobs with optional pagination
-   * Returns DTOs, not domain entities
    */
   async fetchJobs(options: AdzunaSearchOptions = {}): Promise<AdzunaJobDTO[]> {
     const {
@@ -141,7 +193,7 @@ export class AdzunaAPI {
   }
 
   /**
-   * Fetch a single page of results with retry logic
+   * Fetch a single page with retry logic
    */
   private async fetchPage(
     keywords: string,
@@ -178,7 +230,7 @@ export class AdzunaAPI {
   }
 
   /**
-   * Handle request errors with retry logic for transient failures
+   * Handle request errors with retry logic
    */
   private async handleRequestError(
     error: unknown,
@@ -228,7 +280,179 @@ export class AdzunaAPI {
   }
 
   /**
-   * Map raw API response to DTO with error handling
+   * Normalize salary data with advanced inconsistency handling
+   */
+  private normalizeSalary(rawJob: AdzunaJobResponse): NormalizedSalary {
+    const salaryMin = rawJob.salary_min;
+    const salaryMax = rawJob.salary_max;
+    const isPredicted = rawJob.salary_is_predicted === '1';
+
+    // Case 1: No salary data
+    if (!salaryMin && !salaryMax) {
+      return {
+        minKEuros: null,
+        maxKEuros: null,
+        isPredicted: SalaryPredictionStatus.MISSING,
+        isReliable: false,
+      };
+    }
+
+    // Determine if values are daily rates or annual salaries
+    const isDailyRate = this.isDailyRate(salaryMin, salaryMax, rawJob.contract_type);
+
+    let normalizedMin: number | null = null;
+    let normalizedMax: number | null = null;
+
+    if (isDailyRate) {
+      // Convert daily rates to annual (assuming 218 working days/year)
+      normalizedMin = salaryMin ? Math.round((salaryMin * 218) / 1000) : null;
+      normalizedMax = salaryMax ? Math.round((salaryMax * 218) / 1000) : null;
+    } else {
+      // Already annual, convert to k€
+      normalizedMin = salaryMin ? Math.round(salaryMin / 1000) : null;
+      normalizedMax = salaryMax ? Math.round(salaryMax / 1000) : null;
+    }
+
+    // Validate and adjust salary range
+    const adjustedSalary = this.validateAndAdjustSalaryRange(normalizedMin, normalizedMax);
+
+    // Determine reliability
+    const isReliable = this.isSalaryReliable(
+      adjustedSalary.minKEuros,
+      adjustedSalary.maxKEuros,
+      isPredicted
+    );
+
+    const predictionStatus = isPredicted
+      ? SalaryPredictionStatus.PREDICTED
+      : adjustedSalary.minKEuros === null && adjustedSalary.maxKEuros === null
+        ? SalaryPredictionStatus.MISSING
+        : SalaryPredictionStatus.ACTUAL;
+
+    return {
+      minKEuros: adjustedSalary.minKEuros,
+      maxKEuros: adjustedSalary.maxKEuros,
+      isPredicted: predictionStatus,
+      isReliable,
+      originalMin: salaryMin,
+      originalMax: salaryMax,
+    };
+  }
+
+  /**
+   * Determine if salary values represent daily rates
+   */
+  private isDailyRate(salaryMin?: number, salaryMax?: number, contractType?: string): boolean {
+    // Contract type hint
+    if (contractType === 'contract') {
+      return true;
+    }
+
+    // No salary data to evaluate
+    if (!salaryMin && !salaryMax) {
+      return false;
+    }
+
+    // Check numeric ranges - use the higher value if available
+    const valueToCheck = salaryMax || salaryMin || 0;
+
+    // If value is within daily rate range, likely a daily rate
+    if (
+      valueToCheck >= this.salaryConfig.minDailyRate &&
+      valueToCheck <= this.salaryConfig.maxDailyRate
+    ) {
+      return true;
+    }
+
+    // Edge case: very small values (< 5000) are likely daily rates
+    // This catches cases like salary_min: 40, salary_max: 65
+    if (valueToCheck > 0 && valueToCheck < 5000) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Validate and adjust salary range for consistency
+   */
+  private validateAndAdjustSalaryRange(
+    minKEuros: number | null,
+    maxKEuros: number | null
+  ): { minKEuros: number | null; maxKEuros: number | null } {
+    // Case: Only one value provided
+    if (minKEuros !== null && maxKEuros === null) {
+      // Use min as a point estimate
+      return { minKEuros, maxKEuros: minKEuros };
+    }
+
+    if (minKEuros === null && maxKEuros !== null) {
+      // Use max as a point estimate
+      return { minKEuros: maxKEuros, maxKEuros };
+    }
+
+    if (minKEuros === null || maxKEuros === null) {
+      return { minKEuros: null, maxKEuros: null };
+    }
+
+    // Case: Min > Max (swap them)
+    if (minKEuros > maxKEuros) {
+      console.warn(`Salary min (${minKEuros}) > max (${maxKEuros}), swapping values`);
+      [minKEuros, maxKEuros] = [maxKEuros, minKEuros];
+    }
+
+    // Case: Range is too wide (unrealistic)
+    const rangeRatio = maxKEuros / minKEuros;
+    if (rangeRatio > this.salaryConfig.maxRangeRatio) {
+      console.warn(`Salary range too wide (ratio: ${rangeRatio.toFixed(2)}), using midpoint`);
+      const midpoint = Math.round((minKEuros + maxKEuros) / 2);
+      return { minKEuros: midpoint, maxKEuros: midpoint };
+    }
+
+    // Case: Unrealistic values (too low or too high)
+    if (
+      minKEuros < this.salaryConfig.minTechSalaryKEuros ||
+      maxKEuros > this.salaryConfig.maxAnnualSalary / 1000
+    ) {
+      console.warn(`Salary values outside realistic range: ${minKEuros}-${maxKEuros}k€`);
+      return { minKEuros: null, maxKEuros: null };
+    }
+
+    return { minKEuros, maxKEuros };
+  }
+
+  /**
+   * Determine if salary data is reliable
+   */
+  private isSalaryReliable(
+    minKEuros: number | null,
+    maxKEuros: number | null,
+    isPredicted: boolean
+  ): boolean {
+    // Missing data is not reliable
+    if (minKEuros === null && maxKEuros === null) {
+      return false;
+    }
+
+    // Predicted salaries are less reliable
+    if (isPredicted) {
+      return false;
+    }
+
+    // Check if values are within realistic ranges
+    if (minKEuros !== null && minKEuros < this.salaryConfig.minTechSalaryKEuros) {
+      return false;
+    }
+
+    if (maxKEuros !== null && maxKEuros > this.salaryConfig.maxAnnualSalary / 1000) {
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * Map raw API response to DTO
    */
   private async mapToDTO(rawJob: AdzunaJobResponse): Promise<AdzunaJobDTO | null> {
     try {
@@ -245,18 +469,16 @@ export class AdzunaAPI {
       // Detect technologies
       const technologies = techDetector.detect(fullText);
 
-      // Validate minimum technology requirement
       if (technologies.length === 0) {
         console.warn(`Skipping job: No technologies detected`, rawJob);
         return null;
       }
 
+      // Normalize salary with advanced handling
+      const normalizedSalary = this.normalizeSalary(rawJob);
+
       // Extract region ID
       const regionId = await this.extractRegionId(rawJob.location?.display_name);
-
-      // Convert salary from full euros to k€
-      const salaryMinKEuros = rawJob.salary_min ? Math.round(rawJob.salary_min / 1000) : null;
-      const salaryMaxKEuros = rawJob.salary_max ? Math.round(rawJob.salary_max / 1000) : null;
 
       // Handle date
       let postedDate: Date;
@@ -277,9 +499,11 @@ export class AdzunaAPI {
         technologies,
         location: rawJob.location?.display_name || 'France',
         regionId,
-        salaryMinKEuros,
-        salaryMaxKEuros,
-        experienceLevel: null, // Domain layer responsibility
+        salaryMinKEuros: normalizedSalary.minKEuros,
+        salaryMaxKEuros: normalizedSalary.maxKEuros,
+        salaryPredictionStatus: normalizedSalary.isPredicted,
+        salaryIsReliable: normalizedSalary.isReliable,
+        experienceLevel: null,
         sourceUrl: rawJob.redirect_url || '',
         postedDate,
       };
@@ -290,7 +514,7 @@ export class AdzunaAPI {
   }
 
   /**
-   * Extract region ID from location string
+   * Extract region ID from location string with race condition protection
    */
   private async extractRegionId(location?: string): Promise<number | null> {
     if (!location) return null;
@@ -299,16 +523,42 @@ export class AdzunaAPI {
 
     for (const [normalizedKey, regionCode] of this.regionCodeMapping) {
       if (normalizedLocation.includes(normalizedKey)) {
+        // Check if we have a cached result
         if (this.regionIdCache.has(regionCode)) {
           return this.regionIdCache.get(regionCode)!;
         }
 
+        // Check if there's already a pending lookup for this region code
+        if (this.regionLookupPromises.has(regionCode)) {
+          return this.regionLookupPromises.get(regionCode)!;
+        }
+
+        // Create a new lookup promise
         if (this.regionRepository) {
-          const regionId = await this.regionRepository.findByCode(regionCode);
-          if (regionId) {
-            this.regionIdCache.set(regionCode, regionId);
-            return regionId;
-          }
+          const lookupPromise = this.regionRepository
+            .findByCode(regionCode)
+            .then(regionId => {
+              // Clean up the promise from the pending map
+              this.regionLookupPromises.delete(regionCode);
+
+              // Cache the result if found
+              if (regionId) {
+                this.regionIdCache.set(regionCode, regionId);
+              }
+
+              return regionId;
+            })
+            .catch(error => {
+              // Clean up on error too
+              this.regionLookupPromises.delete(regionCode);
+              console.error(`Error looking up region ${regionCode}:`, error);
+              return null;
+            });
+
+          // Store the promise while it's pending
+          this.regionLookupPromises.set(regionCode, lookupPromise);
+
+          return lookupPromise;
         }
 
         return null;
@@ -330,9 +580,6 @@ export class AdzunaAPI {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  /**
-   * Get the source name for this API
-   */
   getSourceName(): string {
     return this.SOURCE_NAME;
   }
