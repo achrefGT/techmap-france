@@ -75,6 +75,7 @@ export class FranceTravailAPI {
   private apiUrl = 'https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search';
   private token: string | null = null;
   private tokenExpiry: number = 0;
+  private tokenRefreshPromise: Promise<void> | null = null; // FIX: Prevent concurrent token refreshes
   private readonly SOURCE_NAME = 'france_travail';
 
   private readonly MAX_RESULTS_PER_REQUEST = 150;
@@ -237,6 +238,7 @@ export class FranceTravailAPI {
   ]);
 
   private regionIdCache: Map<string, number> = new Map();
+  private regionFetchPromises: Map<string, Promise<number | null>> = new Map(); // FIX: Prevent concurrent region fetches
 
   constructor(
     private clientId: string,
@@ -274,6 +276,7 @@ export class FranceTravailAPI {
 
     const maxResults = params.maxResults || this.DEFAULT_MAX_RESULTS;
     const allJobs: FranceTravailJobDTO[] = [];
+    let hadError = false;
 
     try {
       await this.ensureToken();
@@ -288,6 +291,11 @@ export class FranceTravailAPI {
         const jobs = await this.fetchRange(params, range);
 
         if (jobs.length === 0) {
+          // Check if this was due to an error or just no more results
+          // If we got no jobs on the first request, it might be an error
+          if (i === 0 && allJobs.length === 0) {
+            hadError = true;
+          }
           break;
         }
 
@@ -298,11 +306,14 @@ export class FranceTravailAPI {
         }
       }
 
-      this.recordSuccess();
+      if (!hadError && allJobs.length > 0) {
+        this.recordSuccess();
+      }
 
       return allJobs;
     } catch (error) {
       console.error('France Travail API error:', error);
+      this.recordFailure();
       return allJobs;
     }
   }
@@ -313,7 +324,7 @@ export class FranceTravailAPI {
   private async fetchRange(
     params: FranceTravailSearchParams,
     range: string,
-    attempt: number = 1
+    attempt: number = 0
   ): Promise<FranceTravailJobDTO[]> {
     try {
       const searchParams: Record<string, any> = {
@@ -343,7 +354,12 @@ export class FranceTravailAPI {
 
       return mappedJobs.filter((dto): dto is FranceTravailJobDTO => dto !== null);
     } catch (error) {
-      return this.handleRequestError(error, params, range, attempt);
+      const result = await this.handleRequestError(error, params, range, attempt);
+      // If we exhausted all retries and still failed, this counts as a failure
+      if (result.length === 0 && attempt >= this.MAX_RETRY_ATTEMPTS) {
+        this.recordFailure();
+      }
+      return result;
     }
   }
 
@@ -367,8 +383,11 @@ export class FranceTravailAPI {
           'France Travail API authentication error. Check credentials or token expired.',
           axiosError.response.data
         );
+
+        // FIX: Invalidate token and force refresh
         this.token = null;
         this.tokenExpiry = 0;
+        this.tokenRefreshPromise = null; // Clear any pending refresh
 
         if (attempt < this.MAX_RETRY_ATTEMPTS) {
           try {
@@ -447,7 +466,7 @@ export class FranceTravailAPI {
       console.error('France Travail API unexpected error:', error);
     }
 
-    this.recordFailure();
+    // Don't call recordFailure here - it's called in fetchRange after all retries exhausted
     return [];
   }
 
@@ -476,56 +495,76 @@ export class FranceTravailAPI {
 
   /**
    * Ensure we have a valid token
+   * FIX: Prevents concurrent token refresh requests
    */
   private async ensureToken(): Promise<void> {
+    // If token is still valid, return immediately
     if (this.token && Date.now() < this.tokenExpiry) {
       return;
     }
 
-    try {
-      const response = await axios.post(
-        this.tokenUrl,
-        new URLSearchParams({
-          grant_type: 'client_credentials',
-          client_id: this.clientId,
-          client_secret: this.clientSecret,
-          scope: 'api_offresdemploiv2 o2dsoffre',
-        }),
-        {
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            Accept: 'application/json',
-          },
-          timeout: 15000,
-        }
-      );
-
-      if (!response.data?.access_token) {
-        throw new Error('Invalid token response: missing access_token');
-      }
-
-      this.token = response.data.access_token;
-
-      const expiresIn = response.data.expires_in || 3600;
-      this.tokenExpiry = Date.now() + expiresIn * 1000 - 10000;
-    } catch (error) {
-      const axiosError = error as AxiosError;
-
-      if (axios.isAxiosError(error)) {
-        if (axiosError.response) {
-          console.error(
-            `Failed to obtain France Travail token (status ${axiosError.response.status}):`,
-            axiosError.response.data
-          );
-        } else {
-          console.error('Failed to obtain France Travail token:', axiosError.message);
-        }
-      } else {
-        console.error('Failed to obtain France Travail token:', error);
-      }
-
-      throw new Error('Token authentication failed');
+    // If token refresh is already in progress, wait for it
+    if (this.tokenRefreshPromise) {
+      return this.tokenRefreshPromise;
     }
+
+    // Start new token refresh and store the promise
+    this.tokenRefreshPromise = (async () => {
+      try {
+        // Double-check in case token was refreshed while waiting
+        if (this.token && Date.now() < this.tokenExpiry) {
+          return;
+        }
+
+        const response = await axios.post(
+          this.tokenUrl,
+          new URLSearchParams({
+            grant_type: 'client_credentials',
+            client_id: this.clientId,
+            client_secret: this.clientSecret,
+            scope: 'api_offresdemploiv2 o2dsoffre',
+          }),
+          {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              Accept: 'application/json',
+            },
+            timeout: 15000,
+          }
+        );
+
+        if (!response.data?.access_token) {
+          throw new Error('Invalid token response: missing access_token');
+        }
+
+        this.token = response.data.access_token;
+
+        const expiresIn = response.data.expires_in || 3600;
+        this.tokenExpiry = Date.now() + expiresIn * 1000 - 10000;
+      } catch (error) {
+        const axiosError = error as AxiosError;
+
+        if (axios.isAxiosError(error)) {
+          if (axiosError.response) {
+            console.error(
+              `Failed to obtain France Travail token (status ${axiosError.response.status}):`,
+              axiosError.response.data
+            );
+          } else {
+            console.error('Failed to obtain France Travail token:', axiosError.message);
+          }
+        } else {
+          console.error('Failed to obtain France Travail token:', error);
+        }
+
+        throw new Error('Token authentication failed');
+      } finally {
+        // Clear the promise when done (success or failure)
+        this.tokenRefreshPromise = null;
+      }
+    })();
+
+    return this.tokenRefreshPromise;
   }
 
   /**
@@ -606,6 +645,7 @@ export class FranceTravailAPI {
     const codePostal = lieuTravail.codePostal?.replace(/\s/g, '');
     const libelle = lieuTravail.libelle;
 
+    // First try: Extract from postal code
     if (codePostal && codePostal.length >= 2) {
       let dept: string;
 
@@ -622,9 +662,22 @@ export class FranceTravailAPI {
       }
     }
 
+    // Second try: Extract from libelle
     if (libelle) {
+      // Remove special characters and normalize
       const normalizedLocation = this.normalizeString(libelle);
 
+      // Try to extract department code from libelle (e.g., "69 - LYON 03" -> "69")
+      const deptMatch = libelle.match(/^(\d{2,3})\s*[-——]\s*/);
+      if (deptMatch) {
+        const dept = deptMatch[1].toLowerCase();
+        const regionCode = this.regionCodeMapping.get(dept);
+        if (regionCode) {
+          return this.getRegionIdFromCode(regionCode);
+        }
+      }
+
+      // Try to match city names or region names
       for (const [key, regionCode] of this.regionCodeMapping) {
         if (normalizedLocation.includes(key)) {
           return this.getRegionIdFromCode(regionCode);
@@ -635,61 +688,92 @@ export class FranceTravailAPI {
     return null;
   }
 
+  /**
+   * Get region ID from code with caching
+   * FIX: Prevents concurrent fetches of the same region
+   */
   private async getRegionIdFromCode(regionCode: string): Promise<number | null> {
+    // Check cache first
     if (this.regionIdCache.has(regionCode)) {
       return this.regionIdCache.get(regionCode)!;
     }
 
-    if (this.regionRepository) {
-      const regionId = await this.regionRepository.findByCode(regionCode);
-      if (regionId) {
-        this.regionIdCache.set(regionCode, regionId);
-        return regionId;
-      }
+    // Check if fetch is already in progress
+    if (this.regionFetchPromises.has(regionCode)) {
+      return this.regionFetchPromises.get(regionCode)!;
     }
 
-    return null;
+    // Start new fetch and store the promise
+    const fetchPromise = (async () => {
+      try {
+        if (this.regionRepository) {
+          const regionId = await this.regionRepository.findByCode(regionCode);
+          if (regionId) {
+            this.regionIdCache.set(regionCode, regionId);
+            return regionId;
+          }
+        }
+        return null;
+      } finally {
+        // Clean up the promise after completion
+        this.regionFetchPromises.delete(regionCode);
+      }
+    })();
+
+    this.regionFetchPromises.set(regionCode, fetchPromise);
+    return fetchPromise;
   }
 
   /**
    * Extract salary from string - returns value in FULL EUROS
    * (Converted to k€ in mapToDTO)
+   * Handles both monthly and annual salaries with decimal support
    */
   private extractSalary(salaryString?: string, type: 'min' | 'max' = 'min'): number | null {
     if (!salaryString || typeof salaryString !== 'string') return null;
 
-    // Pattern for ranges: "30000 à 40000 Euros"
-    const yearlyPattern = /(\d+(?:\s?\d{3})*)\s*(?:à|a|[-–—])\s*(\d+(?:\s?\d{3})*)\s*(?:euros?|€)/i;
-    const match = salaryString.match(yearlyPattern);
+    // Normalize the string
+    const normalized = salaryString.toLowerCase().replace(/\s+/g, ' ').trim();
+
+    // Check if it's monthly salary and needs conversion
+    const isMonthly = /mensuel/i.test(normalized);
+    const monthsMatch = normalized.match(/sur\s+(\d+(?:\.\d+)?)\s+mois/i);
+    const multiplier = isMonthly && monthsMatch ? parseFloat(monthsMatch[1]) : 1;
+
+    // Pattern for ranges with decimals: "2300.0 à 3000.0 Euros" or "30000 à 40000 Euros"
+    const rangePattern =
+      /(\d+(?:\.\d+)?(?:\s?\d{3})*)\s*(?:à|a|[-——])\s*(\d+(?:\.\d+)?(?:\s?\d{3})*)\s*(?:euros?|€)/i;
+    const match = normalized.match(rangePattern);
 
     if (match) {
       try {
-        const min = parseInt(match[1].replace(/\s/g, ''), 10);
-        const max = parseInt(match[2].replace(/\s/g, ''), 10);
+        const min = parseFloat(match[1].replace(/\s/g, ''));
+        const max = parseFloat(match[2].replace(/\s/g, ''));
 
         if (isNaN(min) || isNaN(max)) {
           return null;
         }
 
-        return type === 'min' ? min : max;
+        const value = type === 'min' ? min : max;
+        return Math.round(value * multiplier);
       } catch {
         return null;
       }
     }
 
-    // Try single value: "50 000 €"
-    const singlePattern = /(\d+(?:\s?\d{3})*)\s*(?:euros?|€)/i;
-    const singleMatch = salaryString.match(singlePattern);
+    // Try single value with decimals: "50 000.0 €" or "2500.0 Euros"
+    const singlePattern = /(\d+(?:\.\d+)?(?:\s?\d{3})*)\s*(?:euros?|€)/i;
+    const singleMatch = normalized.match(singlePattern);
 
     if (singleMatch) {
       try {
-        const amount = parseInt(singleMatch[1].replace(/\s/g, ''), 10);
+        const amount = parseFloat(singleMatch[1].replace(/\s/g, ''));
 
         if (isNaN(amount)) {
           return null;
         }
 
-        return amount;
+        return Math.round(amount * multiplier);
       } catch {
         return null;
       }
