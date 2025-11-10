@@ -31,7 +31,7 @@ describe('Database Connection', () => {
 
   it('should create pool with correct configuration in development', async () => {
     // Import the module fresh after env vars are set
-    await import('../../../../src/infrastructure/database/connection');
+    await import('../../../../src/infrastructure/persistence/connection');
 
     expect(mockPool).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -47,7 +47,7 @@ describe('Database Connection', () => {
   it('should enable SSL in production', async () => {
     process.env.NODE_ENV = 'production';
 
-    await import('../../../../src/infrastructure/database/connection');
+    await import('../../../../src/infrastructure/persistence/connection');
 
     expect(mockPool).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -61,7 +61,7 @@ describe('Database Connection', () => {
     process.env.PG_IDLE_TIMEOUT = '60000';
     process.env.PG_CONN_TIMEOUT = '5000';
 
-    await import('../../../../src/infrastructure/database/connection');
+    await import('../../../../src/infrastructure/persistence/connection');
 
     expect(mockPool).toHaveBeenCalledWith(
       expect.objectContaining({

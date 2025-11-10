@@ -1,11 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
-import { PostgresJobRepository } from '../../../../src/infrastructure/database/PostgresJobRepository';
+import { PostgresJobRepository } from '../../../../src/infrastructure/persistence/PostgresJobRepository';
 import { Job } from '../../../../src/domain/entities/Job';
 import { JobFilters } from '../../../../src/domain/repositories/IJobRepository';
-import { query } from '../../../../src/infrastructure/database/connection';
+import { query } from '../../../../src/infrastructure/persistence/connection';
 
-jest.mock('../../../../src/infrastructure/database/connection');
+jest.mock('../../../../src/infrastructure/persistence/connection');
 
 const mockQuery = query as jest.MockedFunction<typeof query>;
 

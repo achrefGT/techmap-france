@@ -1,10 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
-import { PostgresRegionRepository } from '../../../../src/infrastructure/database/PostgresRegionRepository';
+import { PostgresRegionRepository } from '../../../../src/infrastructure/persistence/PostgresRegionRepository';
 import { Region } from '../../../../src/domain/entities/Region';
-import { query } from '../../../../src/infrastructure/database/connection';
+import { query } from '../../../../src/infrastructure/persistence/connection';
 
-jest.mock('../../../../src/infrastructure/database/connection');
+jest.mock('../../../../src/infrastructure/persistence/connection');
 
 const mockQuery = query as jest.MockedFunction<typeof query>;
 
