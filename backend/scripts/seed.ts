@@ -1,17 +1,9 @@
-import { Pool } from 'pg';
 import * as fs from 'fs';
 import * as path from 'path';
 import dotenv from 'dotenv';
+import { pool, query } from '../src/infrastructure/persistence/connection';
 
 dotenv.config();
-
-const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432'),
-  database: process.env.DB_NAME || 'job_aggregator',
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || 'postgres',
-});
 
 async function runSeed(filename: string) {
   const filePath = path.join(
@@ -34,7 +26,7 @@ async function runSeed(filename: string) {
   console.log(`🌱 Running seed: ${filename}`);
 
   try {
-    await pool.query(sql);
+    await query(sql);
     console.log(`✅ ${filename} completed`);
   } catch (error) {
     console.error(`❌ ${filename} failed:`, error);
@@ -64,8 +56,8 @@ async function seed() {
     }
 
     // Get counts for confirmation
-    const regionsResult = await pool.query('SELECT COUNT(*) FROM regions');
-    const techsResult = await pool.query('SELECT COUNT(*) FROM technologies');
+    const regionsResult = await query('SELECT COUNT(*) FROM regions');
+    const techsResult = await query('SELECT COUNT(*) FROM technologies');
 
     console.log('\n📊 Database populated:');
     console.log(`   - Regions: ${regionsResult.rows[0].count}`);

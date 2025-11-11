@@ -15,6 +15,7 @@ export enum DomainErrorCode {
 }
 
 export class DomainError extends Error {
+  details: any;
   constructor(
     public code: DomainErrorCode,
     public metadata?: Record<string, any>

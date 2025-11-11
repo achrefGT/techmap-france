@@ -1,17 +1,9 @@
-import { Pool } from 'pg';
 import * as fs from 'fs';
 import * as path from 'path';
 import dotenv from 'dotenv';
+import { pool, query } from '../src/infrastructure/persistence/connection';
 
 dotenv.config();
-
-const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432'),
-  database: process.env.DB_NAME || 'job_aggregator',
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || 'postgres',
-});
 
 // Migration tracking table
 async function createMigrationsTable() {
@@ -22,16 +14,16 @@ async function createMigrationsTable() {
       applied_at TIMESTAMP DEFAULT NOW()
     )
   `;
-  await pool.query(sql);
+  await query(sql);
 }
 
 async function getAppliedMigrations(): Promise<Set<string>> {
-  const result = await pool.query('SELECT migration_name FROM schema_migrations');
+  const result = await query('SELECT migration_name FROM schema_migrations');
   return new Set(result.rows.map(row => row.migration_name));
 }
 
 async function markMigrationAsApplied(migrationName: string) {
-  await pool.query('INSERT INTO schema_migrations (migration_name) VALUES ($1)', [migrationName]);
+  await query('INSERT INTO schema_migrations (migration_name) VALUES ($1)', [migrationName]);
 }
 
 async function runMigration(filename: string) {
@@ -54,7 +46,7 @@ async function runMigration(filename: string) {
   console.log(`📦 Running migration: ${filename}`);
 
   try {
-    await pool.query(sql);
+    await query(sql);
     await markMigrationAsApplied(filename);
     console.log(`✅ ${filename} completed successfully`);
   } catch (error) {
