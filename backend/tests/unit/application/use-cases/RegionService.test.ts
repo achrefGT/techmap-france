@@ -106,9 +106,6 @@ describe('RegionService', () => {
       count: jest.fn(),
       save: jest.fn(),
       saveMany: jest.fn(),
-      findRecent: jest.fn(),
-      findByTechnology: jest.fn(),
-      findByRegion: jest.fn(),
       deactivateOldJobs: jest.fn(),
     } as jest.Mocked<IJobRepository>;
 
@@ -214,7 +211,7 @@ describe('RegionService', () => {
       const mockNodeTech = createMockTechnology({ id: 3, name: 'Node.js' });
 
       mockRegionRepository.findById.mockResolvedValue(mockRegion);
-      mockJobRepository.findByRegion.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockTechnologyRepository.findByName.mockImplementation(async (name: string) => {
         if (name === 'React') return mockReactTech;
         if (name === 'TypeScript') return mockTypescriptTech;
@@ -232,6 +229,7 @@ describe('RegionService', () => {
       expect(result?.remoteJobsPercentage).toBeDefined();
       expect(result?.experienceDistribution).toBeDefined();
       expect(result?.topCompanies).toBeDefined();
+      expect(mockJobRepository.findAll).toHaveBeenCalledWith({ regionIds: [11] }, 1, 10000);
     });
 
     it('should calculate top technologies correctly', async () => {
@@ -246,7 +244,7 @@ describe('RegionService', () => {
       const mockTypescriptTech = createMockTechnology({ id: 2, name: 'TypeScript' });
 
       mockRegionRepository.findById.mockResolvedValue(mockRegion);
-      mockJobRepository.findByRegion.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockTechnologyRepository.findByName.mockImplementation(async (name: string) => {
         if (name === 'React') return mockReactTech;
         if (name === 'TypeScript') return mockTypescriptTech;
@@ -273,7 +271,7 @@ describe('RegionService', () => {
       );
 
       mockRegionRepository.findById.mockResolvedValue(mockRegion);
-      mockJobRepository.findByRegion.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockTechnologyRepository.findByName.mockImplementation(async (name: string) => {
         const id = parseInt(name.replace('Tech', '')) + 1;
         return createMockTechnology({ id, name });
@@ -292,7 +290,7 @@ describe('RegionService', () => {
       ];
 
       mockRegionRepository.findById.mockResolvedValue(mockRegion);
-      mockJobRepository.findByRegion.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockTechnologyRepository.findByName.mockResolvedValue(createMockTechnology());
 
       const result = await regionService.getRegionStats(11);
@@ -313,7 +311,7 @@ describe('RegionService', () => {
       ];
 
       mockRegionRepository.findById.mockResolvedValue(mockRegion);
-      mockJobRepository.findByRegion.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockTechnologyRepository.findByName.mockResolvedValue(createMockTechnology());
 
       const result = await regionService.getRegionStats(11);
@@ -327,7 +325,7 @@ describe('RegionService', () => {
       const mockJobs = [createMockJob({ salaryMinKEuros: null, salaryMaxKEuros: null })];
 
       mockRegionRepository.findById.mockResolvedValue(mockRegion);
-      mockJobRepository.findByRegion.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockTechnologyRepository.findByName.mockResolvedValue(createMockTechnology());
 
       const result = await regionService.getRegionStats(11);
@@ -344,7 +342,7 @@ describe('RegionService', () => {
       ];
 
       mockRegionRepository.findById.mockResolvedValue(mockRegion);
-      mockJobRepository.findByRegion.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockTechnologyRepository.findByName.mockResolvedValue(createMockTechnology());
 
       const result = await regionService.getRegionStats(11);
@@ -363,7 +361,7 @@ describe('RegionService', () => {
       ];
 
       mockRegionRepository.findById.mockResolvedValue(mockRegion);
-      mockJobRepository.findByRegion.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockTechnologyRepository.findByName.mockResolvedValue(createMockTechnology());
 
       const result = await regionService.getRegionStats(11);
@@ -376,7 +374,7 @@ describe('RegionService', () => {
       const mockRegion = createMockRegion();
 
       mockRegionRepository.findById.mockResolvedValue(mockRegion);
-      mockJobRepository.findByRegion.mockResolvedValue([]);
+      mockJobRepository.findAll.mockResolvedValue([]);
 
       const result = await regionService.getRegionStats(11);
 
@@ -396,7 +394,7 @@ describe('RegionService', () => {
       ];
 
       mockRegionRepository.findById.mockResolvedValue(mockRegion);
-      mockJobRepository.findByRegion.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockTechnologyRepository.findByName.mockResolvedValue(createMockTechnology());
 
       const result = await regionService.getRegionStats(11);
@@ -419,7 +417,7 @@ describe('RegionService', () => {
       ];
 
       mockRegionRepository.findById.mockResolvedValue(mockRegion);
-      mockJobRepository.findByRegion.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockTechnologyRepository.findByName.mockResolvedValue(createMockTechnology());
 
       const result = await regionService.getRegionStats(11);
@@ -444,7 +442,7 @@ describe('RegionService', () => {
       );
 
       mockRegionRepository.findById.mockResolvedValue(mockRegion);
-      mockJobRepository.findByRegion.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockTechnologyRepository.findByName.mockResolvedValue(createMockTechnology());
 
       const result = await regionService.getRegionStats(11);
@@ -457,7 +455,7 @@ describe('RegionService', () => {
       const mockJobs = [createMockJob({ technologies: ['UnknownTech', 'React'] })];
 
       mockRegionRepository.findById.mockResolvedValue(mockRegion);
-      mockJobRepository.findByRegion.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockTechnologyRepository.findByName.mockImplementation(async (name: string) => {
         if (name === 'React') return createMockTechnology({ name: 'React' });
         return null; // UnknownTech not found
@@ -474,7 +472,7 @@ describe('RegionService', () => {
       const mockRegion = createMockRegion({ jobCount: 0 });
 
       mockRegionRepository.findById.mockResolvedValue(mockRegion);
-      mockJobRepository.findByRegion.mockResolvedValue([]);
+      mockJobRepository.findAll.mockResolvedValue([]);
 
       const result = await regionService.getRegionStats(11);
 

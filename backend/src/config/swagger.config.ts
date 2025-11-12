@@ -220,7 +220,8 @@ const swaggerDefinition: SwaggerDefinition = {
             type: 'string',
             description: 'Job posting URL',
             format: 'uri',
-            example: 'https://www.welcometothejungle.com/fr/companies/tech-corp/jobs/senior-developer',
+            example:
+              'https://www.welcometothejungle.com/fr/companies/tech-corp/jobs/senior-developer',
           },
           isActive: {
             type: 'boolean',
@@ -261,7 +262,7 @@ const swaggerDefinition: SwaggerDefinition = {
           },
         },
       },
-      
+
       JobSummary: {
         type: 'object',
         description: 'Lightweight job summary for list views',

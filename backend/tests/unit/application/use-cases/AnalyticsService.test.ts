@@ -1,31 +1,19 @@
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
-import { TechnologyService } from '../../../../src/application/use-cases/TechnologyService';
-import { ITechnologyRepository } from '../../../../src/domain/repositories/ITechnologyRepository';
+import { AnalyticsService } from '../../../../src/application/use-cases/AnalyticsService';
 import { IJobRepository } from '../../../../src/domain/repositories/IJobRepository';
+import { ITechnologyRepository } from '../../../../src/domain/repositories/ITechnologyRepository';
 import { IRegionRepository } from '../../../../src/domain/repositories/IRegionRepository';
-import { Technology } from '../../../../src/domain/entities/Technology';
+import { TrendAnalysisService } from '../../../../src/domain/services/TrendAnalysisService';
 import { Job } from '../../../../src/domain/entities/Job';
+import { Technology } from '../../../../src/domain/entities/Technology';
 import { Region } from '../../../../src/domain/entities/Region';
 
-describe('TechnologyService', () => {
-  let technologyService: TechnologyService;
-  let mockTechnologyRepository: jest.Mocked<ITechnologyRepository>;
+describe('AnalyticsService', () => {
+  let analyticsService: AnalyticsService;
   let mockJobRepository: jest.Mocked<IJobRepository>;
+  let mockTechnologyRepository: jest.Mocked<ITechnologyRepository>;
   let mockRegionRepository: jest.Mocked<IRegionRepository>;
-
-  const createMockTechnology = (overrides: Partial<any> = {}): Technology => {
-    const defaults = {
-      id: 1,
-      name: 'React',
-      category: 'frontend' as const,
-      displayName: 'React',
-      jobCount: 100,
-    };
-
-    const data = { ...defaults, ...overrides };
-
-    return new Technology(data.id, data.name, data.category, data.displayName, data.jobCount);
-  };
+  let mockTrendService: jest.Mocked<TrendAnalysisService>;
 
   const createMockJob = (overrides: Partial<any> = {}): Job => {
     const defaults = {
@@ -77,6 +65,20 @@ describe('TechnologyService', () => {
     );
   };
 
+  const createMockTechnology = (overrides: Partial<any> = {}): Technology => {
+    const defaults = {
+      id: 1,
+      name: 'React',
+      category: 'frontend' as const,
+      displayName: 'React',
+      jobCount: 100,
+    };
+
+    const data = { ...defaults, ...overrides };
+
+    return new Technology(data.id, data.name, data.category, data.displayName, data.jobCount);
+  };
+
   const createMockRegion = (overrides: Partial<any> = {}): Region => {
     const defaults = {
       id: 11,
@@ -93,6 +95,15 @@ describe('TechnologyService', () => {
   };
 
   beforeEach(() => {
+    mockJobRepository = {
+      findById: jest.fn(),
+      findAll: jest.fn(),
+      count: jest.fn(),
+      save: jest.fn(),
+      saveMany: jest.fn(),
+      deactivateOldJobs: jest.fn(),
+    } as jest.Mocked<IJobRepository>;
+
     mockTechnologyRepository = {
       findById: jest.fn(),
       findByName: jest.fn(),
@@ -102,18 +113,6 @@ describe('TechnologyService', () => {
       updateJobCount: jest.fn(),
     } as jest.Mocked<ITechnologyRepository>;
 
-    mockJobRepository = {
-      findById: jest.fn(),
-      findAll: jest.fn(),
-      count: jest.fn(),
-      save: jest.fn(),
-      saveMany: jest.fn(),
-      findRecent: jest.fn(),
-      findByTechnology: jest.fn(),
-      findByRegion: jest.fn(),
-      deactivateOldJobs: jest.fn(),
-    } as jest.Mocked<IJobRepository>;
-
     mockRegionRepository = {
       findById: jest.fn(),
       findByCode: jest.fn(),
@@ -121,214 +120,187 @@ describe('TechnologyService', () => {
       updateJobCount: jest.fn(),
     } as jest.Mocked<IRegionRepository>;
 
-    technologyService = new TechnologyService(
-      mockTechnologyRepository,
+    mockTrendService = {
+      getRisingTechnologies: jest.fn(),
+      getDecliningTechnologies: jest.fn(),
+      getStableTechnologies: jest.fn(),
+      analyzeTrend: jest.fn(),
+    } as any;
+
+    analyticsService = new AnalyticsService(
       mockJobRepository,
-      mockRegionRepository
+      mockTechnologyRepository,
+      mockRegionRepository,
+      mockTrendService
     );
   });
 
-  describe('getAllTechnologies', () => {
-    it('should return all technologies as DTOs', async () => {
-      const mockTechnologies = [
-        createMockTechnology(),
-        createMockTechnology({
-          id: 2,
-          name: 'TypeScript',
-          displayName: 'TypeScript',
-          jobCount: 150,
-        }),
-      ];
-      mockTechnologyRepository.findAll.mockResolvedValue(mockTechnologies);
+  describe('getDashboardStats', () => {
+    it('should return comprehensive dashboard statistics', async () => {
+      const mockJobs = [createMockJob(), createMockJob({ id: '2', company: 'StartupCo' })];
+      const mockTechs = [createMockTechnology()];
+      const mockRegions = [createMockRegion()];
+      const mockRecentJobs = [createMockJob()];
 
-      const result = await technologyService.getAllTechnologies();
+      mockJobRepository.count.mockResolvedValueOnce(100); // totalJobs
+      mockJobRepository.count.mockResolvedValueOnce(85); // activeJobs
+      mockJobRepository.findAll.mockResolvedValueOnce(mockRecentJobs); // recentJobs
+      mockJobRepository.findAll.mockResolvedValueOnce(mockJobs); // allJobs for calculations
+      mockTechnologyRepository.findAll.mockResolvedValue(mockTechs);
+      mockRegionRepository.findAll.mockResolvedValue(mockRegions);
 
-      expect(result).toHaveLength(2);
-      expect(result[0].id).toBe(1);
-      expect(result[0].name).toBe('React');
-      expect(result[1].id).toBe(2);
-      expect(result[1].name).toBe('TypeScript');
-      expect(mockTechnologyRepository.findAll).toHaveBeenCalledTimes(1);
+      const result = await analyticsService.getDashboardStats();
+
+      expect(result.totalJobs).toBe(100);
+      expect(result.activeJobs).toBe(85);
+      expect(result.recentJobs).toBe(1);
+      expect(result.totalTechnologies).toBe(1);
+      expect(result.totalRegions).toBe(1);
+      expect(result.totalCompanies).toBe(2);
+      expect(mockJobRepository.count).toHaveBeenCalledWith({});
+      expect(mockJobRepository.count).toHaveBeenCalledWith({ isActive: true });
+      expect(mockJobRepository.findAll).toHaveBeenCalledWith({ recentDays: 7 }, 1, 10000);
     });
 
-    it('should return empty array when no technologies exist', async () => {
+    it('should handle empty database', async () => {
+      mockJobRepository.count.mockResolvedValue(0);
+      mockJobRepository.findAll.mockResolvedValue([]);
       mockTechnologyRepository.findAll.mockResolvedValue([]);
+      mockRegionRepository.findAll.mockResolvedValue([]);
 
-      const result = await technologyService.getAllTechnologies();
+      const result = await analyticsService.getDashboardStats();
 
-      expect(result).toHaveLength(0);
-    });
-
-    it('should include popularity level and demand status in DTOs', async () => {
-      const mockTech = createMockTechnology({ jobCount: 600 });
-      mockTechnologyRepository.findAll.mockResolvedValue([mockTech]);
-
-      const result = await technologyService.getAllTechnologies();
-
-      expect(result[0].popularityLevel).toBe('trending');
-      expect(result[0].isInDemand).toBe(true);
+      expect(result.totalJobs).toBe(0);
+      expect(result.activeJobs).toBe(0);
+      expect(result.recentJobs).toBe(0);
+      expect(result.totalTechnologies).toBe(0);
+      expect(result.totalRegions).toBe(0);
+      expect(result.totalCompanies).toBe(0);
     });
   });
 
-  describe('getTechnologyById', () => {
-    it('should return a technology DTO when technology exists', async () => {
-      const mockTech = createMockTechnology();
-      mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-
-      const result = await technologyService.getTechnologyById(1);
-
-      expect(result).not.toBeNull();
-      expect(result?.id).toBe(1);
-      expect(result?.name).toBe('React');
-      expect(result?.category).toBe('frontend');
-      expect(mockTechnologyRepository.findById).toHaveBeenCalledWith(1);
-    });
-
-    it('should return null when technology does not exist', async () => {
-      mockTechnologyRepository.findById.mockResolvedValue(null);
-
-      const result = await technologyService.getTechnologyById(999);
-
-      expect(result).toBeNull();
-      expect(mockTechnologyRepository.findById).toHaveBeenCalledWith(999);
-    });
-  });
-
-  describe('getTechnologyStats', () => {
-    it('should return null when technology does not exist', async () => {
-      mockTechnologyRepository.findById.mockResolvedValue(null);
-
-      const result = await technologyService.getTechnologyStats(999);
-
-      expect(result).toBeNull();
-    });
-
-    it('should return comprehensive technology statistics', async () => {
-      const mockTech = createMockTechnology();
+  describe('getSalaryStats', () => {
+    it('should calculate salary statistics by technology', async () => {
       const mockJobs = [
-        createMockJob({
-          technologies: ['React'],
-          salaryMinKEuros: 50,
-          salaryMaxKEuros: 70,
-          isRemote: false,
-          experienceCategory: 'mid',
-          regionId: 11,
-        }),
-        createMockJob({
-          id: '2',
-          technologies: ['React'],
-          salaryMinKEuros: 60,
-          salaryMaxKEuros: 80,
-          isRemote: true,
-          experienceCategory: 'senior',
-          regionId: 11,
-        }),
+        createMockJob({ salaryMinKEuros: 50, salaryMaxKEuros: 70 }),
+        createMockJob({ id: '2', salaryMinKEuros: 60, salaryMaxKEuros: 80 }),
       ];
+      const mockTech = createMockTechnology();
+
+      mockJobRepository.findAll.mockResolvedValueOnce(mockJobs); // Jobs with salary
+      mockTechnologyRepository.findAll.mockResolvedValue([mockTech]);
+      mockJobRepository.findAll.mockResolvedValueOnce(mockJobs); // Tech-specific jobs
+      mockRegionRepository.findAll.mockResolvedValue([]);
+
+      const result = await analyticsService.getSalaryStats();
+
+      expect(result).toBeDefined();
+      expect(mockJobRepository.findAll).toHaveBeenCalledWith({ minSalary: 1 }, 1, 10000);
+      expect(mockJobRepository.findAll).toHaveBeenCalledWith({ technologies: ['React'] }, 1, 10000);
+    });
+
+    it('should calculate salary statistics by region', async () => {
+      const mockJobs = [createMockJob({ salaryMinKEuros: 50, salaryMaxKEuros: 70, regionId: 11 })];
       const mockRegion = createMockRegion();
 
-      mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
-      mockRegionRepository.findById.mockResolvedValue(mockRegion);
+      mockJobRepository.findAll.mockResolvedValueOnce(mockJobs);
+      mockTechnologyRepository.findAll.mockResolvedValue([]);
+      mockRegionRepository.findAll.mockResolvedValue([mockRegion]);
+      mockJobRepository.findAll.mockResolvedValueOnce(mockJobs);
 
-      const result = await technologyService.getTechnologyStats(1);
+      const result = await analyticsService.getSalaryStats();
 
-      expect(result).not.toBeNull();
-      expect(result?.technology.id).toBe(1);
-      expect(result?.totalJobs).toBe(100);
-      expect(result?.averageSalary).not.toBeNull();
-      expect(result?.topRegions).toBeDefined();
-      expect(result?.experienceDistribution).toBeDefined();
-      expect(result?.remoteJobsPercentage).toBeDefined();
-    });
-
-    it('should calculate average salary correctly', async () => {
-      const mockTech = createMockTechnology();
-      const mockJobs = [
-        createMockJob({ salaryMinKEuros: 40, salaryMaxKEuros: 60 }), // midpoint: 50
-        createMockJob({ id: '2', salaryMinKEuros: 60, salaryMaxKEuros: 80 }), // midpoint: 70
-      ];
-
-      mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
-      mockRegionRepository.findById.mockResolvedValue(createMockRegion());
-
-      const result = await technologyService.getTechnologyStats(1);
-
-      // Average of 50 and 70 = 60
-      expect(result?.averageSalary).toBe(60);
+      expect(result).toBeDefined();
+      expect(mockJobRepository.findAll).toHaveBeenCalledWith({ regionIds: [11] }, 1, 10000);
     });
 
     it('should handle jobs without salary data', async () => {
-      const mockTech = createMockTechnology();
-      const mockJobs = [
-        createMockJob({ salaryMinKEuros: null, salaryMaxKEuros: null }),
-        createMockJob({
-          id: '2',
-          salaryMinKEuros: 50,
-          salaryMaxKEuros: 70,
-        }),
-      ];
-
-      mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
-      mockRegionRepository.findById.mockResolvedValue(createMockRegion());
-
-      const result = await technologyService.getTechnologyStats(1);
-
-      // Should only calculate from jobs with salary data
-      expect(result?.averageSalary).toBe(60);
-    });
-
-    it('should return null for average salary when no salary data exists', async () => {
-      const mockTech = createMockTechnology();
       const mockJobs = [createMockJob({ salaryMinKEuros: null, salaryMaxKEuros: null })];
 
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
+      mockTechnologyRepository.findAll.mockResolvedValue([]);
+      mockRegionRepository.findAll.mockResolvedValue([]);
+
+      const result = await analyticsService.getSalaryStats();
+
+      expect(result).toBeDefined();
+    });
+  });
+
+  describe('getMarketInsights', () => {
+    it('should return hot technologies from trend service', async () => {
+      // FIX: Added growthRate property
+      const mockTrends = [
+        {
+          technologyId: 1,
+          technologyName: 'React',
+          currentCount: 150,
+          previousCount: 100,
+          growthPercentage: 50,
+          growthRate: 0.5,
+          growthCategory: 'rising' as const,
+          periodDays: 30,
+        },
+      ];
+      const mockTech = createMockTechnology();
+
+      mockTrendService.getRisingTechnologies.mockResolvedValue(mockTrends);
       mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
-      mockRegionRepository.findById.mockResolvedValue(createMockRegion());
+      mockRegionRepository.findAll.mockResolvedValue([]);
+      mockJobRepository.findAll.mockResolvedValue([]);
 
-      const result = await technologyService.getTechnologyStats(1);
+      const result = await analyticsService.getMarketInsights();
 
-      expect(result?.averageSalary).toBeNull();
+      expect(result.hotTechnologies).toHaveLength(1);
+      expect(result.hotTechnologies[0].technologyName).toBe('React');
+      expect(mockTrendService.getRisingTechnologies).toHaveBeenCalledWith(30);
     });
 
-    it('should calculate top regions correctly', async () => {
-      const mockTech = createMockTechnology();
+    it('should return top regions by job count', async () => {
+      const mockRegions = [
+        createMockRegion({ id: 11, name: 'Île-de-France' }),
+        createMockRegion({ id: 12, name: 'Auvergne-Rhône-Alpes', code: 'ARA' }),
+      ];
       const mockJobs = [
         createMockJob({ regionId: 11 }),
         createMockJob({ id: '2', regionId: 11 }),
-        createMockJob({ id: '3', regionId: 11 }),
-        createMockJob({ id: '4', regionId: 12 }),
-        createMockJob({ id: '5', regionId: 12 }),
-        createMockJob({ id: '6', regionId: 13 }),
+        createMockJob({ id: '3', regionId: 12 }),
       ];
 
-      const mockRegion1 = createMockRegion({ id: 11, name: 'Île-de-France' });
-      const mockRegion2 = createMockRegion({ id: 12, name: 'Auvergne-Rhône-Alpes', code: 'ARA' });
-      const mockRegion3 = createMockRegion({ id: 13, name: 'Nouvelle-Aquitaine', code: 'NAQ' });
+      mockTrendService.getRisingTechnologies.mockResolvedValue([]);
+      mockRegionRepository.findAll.mockResolvedValue(mockRegions);
+      mockJobRepository.findAll.mockResolvedValueOnce(mockJobs); // First call for region 11
+      mockJobRepository.findAll.mockResolvedValueOnce([mockJobs[2]]); // Second call for region 12
+      mockJobRepository.findAll.mockResolvedValueOnce(mockJobs); // Final call for all jobs
 
-      mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
-      mockRegionRepository.findById.mockImplementation(async (id: number) => {
-        if (id === 11) return mockRegion1;
-        if (id === 12) return mockRegion2;
-        if (id === 13) return mockRegion3;
-        return null;
-      });
+      const result = await analyticsService.getMarketInsights();
 
-      const result = await technologyService.getTechnologyStats(1);
-
-      expect(result?.topRegions).toHaveLength(3);
-      expect(result?.topRegions[0].regionName).toBe('Île-de-France');
-      expect(result?.topRegions[0].jobCount).toBe(3);
-      expect(result?.topRegions[1].regionName).toBe('Auvergne-Rhône-Alpes');
-      expect(result?.topRegions[1].jobCount).toBe(2);
-      expect(result?.topRegions[2].regionName).toBe('Nouvelle-Aquitaine');
-      expect(result?.topRegions[2].jobCount).toBe(1);
+      expect(result.topRegions.length).toBeGreaterThan(0);
+      expect(result.topRegions[0].regionName).toBe('Île-de-France');
+      expect(result.topRegions[0].jobCount).toBe(3);
     });
 
-    it('should limit top regions to 10', async () => {
-      const mockTech = createMockTechnology();
+    it('should return top companies with statistics', async () => {
+      const mockJobs = [
+        createMockJob({ company: 'TechCorp', technologies: ['React', 'TypeScript'] }),
+        createMockJob({ id: '2', company: 'TechCorp', technologies: ['React'] }),
+        createMockJob({ id: '3', company: 'StartupCo', technologies: ['Vue'] }),
+      ];
+
+      mockTrendService.getRisingTechnologies.mockResolvedValue([]);
+      mockRegionRepository.findAll.mockResolvedValue([]);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
+
+      const result = await analyticsService.getMarketInsights();
+
+      expect(result.topCompanies.length).toBeGreaterThan(0);
+      expect(result.topCompanies[0].companyName).toBe('TechCorp');
+      expect(result.topCompanies[0].jobCount).toBe(2);
+      expect(result.topCompanies[0].topTechnologies).toContain('React');
+    });
+
+    it('should limit results to top 10', async () => {
+      // FIX: Use valid region codes
       const validRegionCodes = [
         'IDF',
         'ARA',
@@ -344,169 +316,36 @@ describe('TechnologyService', () => {
         'CVL',
         'COR',
       ];
-      const regions = Array.from({ length: 15 }, (_, i) => i + 1);
-      const mockJobs = regions.map((regionId, i) =>
-        createMockJob({
-          id: String(i + 1),
-          regionId,
+
+      const manyRegions = Array.from({ length: 13 }, (_, i) =>
+        createMockRegion({
+          id: i + 1,
+          name: `Region ${i}`,
+          code: validRegionCodes[i],
         })
       );
 
-      mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
-      mockRegionRepository.findById.mockImplementation(async (id: number) => {
-        const codeIndex = (id - 1) % validRegionCodes.length;
-        return createMockRegion({
-          id,
-          name: `Region ${id}`,
-          code: validRegionCodes[codeIndex],
-        });
-      });
+      mockTrendService.getRisingTechnologies.mockResolvedValue([]);
+      mockRegionRepository.findAll.mockResolvedValue(manyRegions);
+      mockJobRepository.findAll.mockResolvedValue([createMockJob()]);
 
-      const result = await technologyService.getTechnologyStats(1);
+      const result = await analyticsService.getMarketInsights();
 
-      expect(result?.topRegions.length).toBeLessThanOrEqual(10);
+      expect(result.topRegions.length).toBeLessThanOrEqual(10);
     });
 
-    it('should handle jobs without region ID', async () => {
-      const mockTech = createMockTechnology();
+    it('should handle companies without salary data', async () => {
       const mockJobs = [
-        createMockJob({ regionId: null }),
-        createMockJob({ id: '2', regionId: 11 }),
+        createMockJob({ company: 'TechCorp', salaryMinKEuros: null, salaryMaxKEuros: null }),
       ];
 
-      mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
-      mockRegionRepository.findById.mockResolvedValue(createMockRegion());
+      mockTrendService.getRisingTechnologies.mockResolvedValue([]);
+      mockRegionRepository.findAll.mockResolvedValue([]);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
 
-      const result = await technologyService.getTechnologyStats(1);
+      const result = await analyticsService.getMarketInsights();
 
-      // Should only include jobs with valid region IDs
-      expect(result?.topRegions).toHaveLength(1);
-      expect(result?.topRegions[0].jobCount).toBe(1);
-    });
-
-    it('should handle region not found in repository', async () => {
-      const mockTech = createMockTechnology();
-      const mockJobs = [createMockJob({ regionId: 999 })];
-
-      mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
-      mockRegionRepository.findById.mockResolvedValue(null);
-
-      const result = await technologyService.getTechnologyStats(1);
-
-      // Should handle missing region gracefully
-      expect(result?.topRegions).toHaveLength(0);
-    });
-
-    it('should calculate experience distribution', async () => {
-      const mockTech = createMockTechnology();
-      const mockJobs = [
-        createMockJob({ experienceCategory: 'junior' }),
-        createMockJob({ id: '2', experienceCategory: 'junior' }),
-        createMockJob({ id: '3', experienceCategory: 'mid' }),
-        createMockJob({ id: '4', experienceCategory: 'mid' }),
-        createMockJob({ id: '5', experienceCategory: 'mid' }),
-        createMockJob({ id: '6', experienceCategory: 'senior' }),
-        createMockJob({ id: '7', experienceCategory: 'lead' }),
-      ];
-
-      mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
-      mockRegionRepository.findById.mockResolvedValue(createMockRegion());
-
-      const result = await technologyService.getTechnologyStats(1);
-
-      expect(result?.experienceDistribution.junior).toBe(2);
-      expect(result?.experienceDistribution.mid).toBe(3);
-      expect(result?.experienceDistribution.senior).toBe(1);
-      expect(result?.experienceDistribution.lead).toBe(1);
-    });
-
-    it('should calculate remote jobs percentage', async () => {
-      const mockTech = createMockTechnology();
-      const mockJobs = [
-        createMockJob({ isRemote: true }),
-        createMockJob({ id: '2', isRemote: false }),
-        createMockJob({ id: '3', isRemote: false }),
-        createMockJob({ id: '4', isRemote: false }),
-      ];
-
-      mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
-      mockRegionRepository.findById.mockResolvedValue(createMockRegion());
-
-      const result = await technologyService.getTechnologyStats(1);
-
-      // 1 out of 4 = 25%
-      expect(result?.remoteJobsPercentage).toBe(25);
-    });
-
-    it('should handle zero jobs for remote percentage', async () => {
-      const mockTech = createMockTechnology();
-
-      mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue([]);
-
-      const result = await technologyService.getTechnologyStats(1);
-
-      expect(result?.remoteJobsPercentage).toBe(0);
-    });
-
-    it('should handle empty job list', async () => {
-      const mockTech = createMockTechnology({ jobCount: 0 });
-
-      mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue([]);
-
-      const result = await technologyService.getTechnologyStats(1);
-
-      expect(result?.totalJobs).toBe(0);
-      expect(result?.averageSalary).toBeNull();
-      expect(result?.topRegions).toHaveLength(0);
-      expect(result?.experienceDistribution.junior).toBe(0);
-      expect(result?.remoteJobsPercentage).toBe(0);
-    });
-  });
-
-  describe('getTechnologiesByCategory', () => {
-    it('should return technologies filtered by category', async () => {
-      const mockTechnologies = [
-        createMockTechnology({ id: 1, name: 'React', category: 'frontend' }),
-        createMockTechnology({ id: 2, name: 'Vue', category: 'frontend', displayName: 'Vue.js' }),
-      ];
-      mockTechnologyRepository.findByCategory.mockResolvedValue(mockTechnologies);
-
-      const result = await technologyService.getTechnologiesByCategory('frontend');
-
-      expect(result).toHaveLength(2);
-      expect(result[0].category).toBe('frontend');
-      expect(result[1].category).toBe('frontend');
-      expect(mockTechnologyRepository.findByCategory).toHaveBeenCalledWith('frontend');
-    });
-
-    it('should return empty array when no technologies in category', async () => {
-      mockTechnologyRepository.findByCategory.mockResolvedValue([]);
-
-      const result = await technologyService.getTechnologiesByCategory('ai-ml');
-
-      expect(result).toHaveLength(0);
-    });
-
-    it('should handle different category types', async () => {
-      const categories = ['frontend', 'backend', 'database', 'devops', 'ai-ml', 'mobile', 'other'];
-
-      for (const category of categories) {
-        mockTechnologyRepository.findByCategory.mockResolvedValue([
-          createMockTechnology({ category: category as any }),
-        ]);
-
-        const result = await technologyService.getTechnologiesByCategory(category);
-
-        expect(result).toHaveLength(1);
-        expect(result[0].category).toBe(category);
-      }
+      expect(result.topCompanies[0].averageSalary).toBeNull();
     });
   });
 });

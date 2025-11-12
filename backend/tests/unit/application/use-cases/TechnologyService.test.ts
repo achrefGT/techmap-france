@@ -108,9 +108,6 @@ describe('TechnologyService', () => {
       count: jest.fn(),
       save: jest.fn(),
       saveMany: jest.fn(),
-      findRecent: jest.fn(),
-      findByTechnology: jest.fn(),
-      findByRegion: jest.fn(),
       deactivateOldJobs: jest.fn(),
     } as jest.Mocked<IJobRepository>;
 
@@ -227,7 +224,7 @@ describe('TechnologyService', () => {
       const mockRegion = createMockRegion();
 
       mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockRegionRepository.findById.mockResolvedValue(mockRegion);
 
       const result = await technologyService.getTechnologyStats(1);
@@ -239,6 +236,7 @@ describe('TechnologyService', () => {
       expect(result?.topRegions).toBeDefined();
       expect(result?.experienceDistribution).toBeDefined();
       expect(result?.remoteJobsPercentage).toBeDefined();
+      expect(mockJobRepository.findAll).toHaveBeenCalledWith({ technologies: ['React'] }, 1, 10000);
     });
 
     it('should calculate average salary correctly', async () => {
@@ -249,7 +247,7 @@ describe('TechnologyService', () => {
       ];
 
       mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockRegionRepository.findById.mockResolvedValue(createMockRegion());
 
       const result = await technologyService.getTechnologyStats(1);
@@ -270,7 +268,7 @@ describe('TechnologyService', () => {
       ];
 
       mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockRegionRepository.findById.mockResolvedValue(createMockRegion());
 
       const result = await technologyService.getTechnologyStats(1);
@@ -284,7 +282,7 @@ describe('TechnologyService', () => {
       const mockJobs = [createMockJob({ salaryMinKEuros: null, salaryMaxKEuros: null })];
 
       mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockRegionRepository.findById.mockResolvedValue(createMockRegion());
 
       const result = await technologyService.getTechnologyStats(1);
@@ -308,7 +306,7 @@ describe('TechnologyService', () => {
       const mockRegion3 = createMockRegion({ id: 13, name: 'Nouvelle-Aquitaine', code: 'NAQ' });
 
       mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockRegionRepository.findById.mockImplementation(async (id: number) => {
         if (id === 11) return mockRegion1;
         if (id === 12) return mockRegion2;
@@ -344,7 +342,6 @@ describe('TechnologyService', () => {
         'CVL',
         'COR',
       ];
-      // Only create as many regions as we have valid codes
       const regions = Array.from({ length: 13 }, (_, i) => i + 1);
       const mockJobs = regions.map((regionId, i) =>
         createMockJob({
@@ -354,7 +351,7 @@ describe('TechnologyService', () => {
       );
 
       mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockRegionRepository.findById.mockImplementation(async (id: number) => {
         const codeIndex = id - 1;
         return createMockRegion({
@@ -377,7 +374,7 @@ describe('TechnologyService', () => {
       ];
 
       mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockRegionRepository.findById.mockResolvedValue(createMockRegion());
 
       const result = await technologyService.getTechnologyStats(1);
@@ -392,7 +389,7 @@ describe('TechnologyService', () => {
       const mockJobs = [createMockJob({ regionId: 999 })];
 
       mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockRegionRepository.findById.mockResolvedValue(null);
 
       const result = await technologyService.getTechnologyStats(1);
@@ -414,7 +411,7 @@ describe('TechnologyService', () => {
       ];
 
       mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockRegionRepository.findById.mockResolvedValue(createMockRegion());
 
       const result = await technologyService.getTechnologyStats(1);
@@ -435,7 +432,7 @@ describe('TechnologyService', () => {
       ];
 
       mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
       mockRegionRepository.findById.mockResolvedValue(createMockRegion());
 
       const result = await technologyService.getTechnologyStats(1);
@@ -448,7 +445,7 @@ describe('TechnologyService', () => {
       const mockTech = createMockTechnology();
 
       mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue([]);
+      mockJobRepository.findAll.mockResolvedValue([]);
 
       const result = await technologyService.getTechnologyStats(1);
 
@@ -459,7 +456,7 @@ describe('TechnologyService', () => {
       const mockTech = createMockTechnology({ jobCount: 0 });
 
       mockTechnologyRepository.findById.mockResolvedValue(mockTech);
-      mockJobRepository.findByTechnology.mockResolvedValue([]);
+      mockJobRepository.findAll.mockResolvedValue([]);
 
       const result = await technologyService.getTechnologyStats(1);
 

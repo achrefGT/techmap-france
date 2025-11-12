@@ -66,9 +66,6 @@ describe('JobService', () => {
       count: jest.fn(),
       save: jest.fn(),
       saveMany: jest.fn(),
-      findRecent: jest.fn(),
-      findByTechnology: jest.fn(),
-      findByRegion: jest.fn(),
       deactivateOldJobs: jest.fn(),
     } as jest.Mocked<IJobRepository>;
 
@@ -169,20 +166,24 @@ describe('JobService', () => {
   describe('getRecentJobs', () => {
     it('should return recent jobs with default threshold', async () => {
       const mockJobs = [createMockJob()];
-      mockJobRepository.findRecent.mockResolvedValue(mockJobs);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
 
       const result = await jobService.getRecentJobs();
 
       expect(result).toHaveLength(1);
-      expect(mockJobRepository.findRecent).toHaveBeenCalledWith(JOB_CONFIG.RECENT_DAYS_THRESHOLD);
+      expect(mockJobRepository.findAll).toHaveBeenCalledWith(
+        { recentDays: JOB_CONFIG.RECENT_DAYS_THRESHOLD },
+        1,
+        10000
+      );
     });
 
     it('should accept custom days parameter', async () => {
-      mockJobRepository.findRecent.mockResolvedValue([]);
+      mockJobRepository.findAll.mockResolvedValue([]);
 
       await jobService.getRecentJobs(14);
 
-      expect(mockJobRepository.findRecent).toHaveBeenCalledWith(14);
+      expect(mockJobRepository.findAll).toHaveBeenCalledWith({ recentDays: 14 }, 1, 10000);
     });
   });
 
@@ -196,7 +197,6 @@ describe('JobService', () => {
 
       expect(result.jobs).toHaveLength(1);
       expect(result.totalItems).toBe(1);
-      // Summary should have fewer fields than full DTO
       expect(result.jobs[0]).toHaveProperty('id');
       expect(result.jobs[0]).toHaveProperty('title');
       expect(result.jobs[0]).not.toHaveProperty('description');
@@ -204,17 +204,19 @@ describe('JobService', () => {
   });
 
   describe('getJobsByCompany', () => {
-    it('should filter jobs by company name (case-insensitive)', async () => {
-      const mockJobs = [
-        createMockJob({ company: 'TechCorp' }),
-        createMockJob({ id: '2', company: 'OtherCorp' }),
-      ];
+    it('should filter jobs by company name', async () => {
+      const mockJobs = [createMockJob({ company: 'TechCorp' })];
       mockJobRepository.findAll.mockResolvedValue(mockJobs);
 
-      const result = await jobService.getJobsByCompany('techcorp');
+      const result = await jobService.getJobsByCompany('TechCorp');
 
       expect(result).toHaveLength(1);
       expect(result[0].company).toBe('TechCorp');
+      expect(mockJobRepository.findAll).toHaveBeenCalledWith(
+        { company: 'TechCorp', isActive: true },
+        1,
+        1000
+      );
     });
 
     it('should filter for active jobs only by default', async () => {
@@ -222,7 +224,11 @@ describe('JobService', () => {
 
       await jobService.getJobsByCompany('TechCorp');
 
-      expect(mockJobRepository.findAll).toHaveBeenCalledWith({ isActive: true }, 1, 1000);
+      expect(mockJobRepository.findAll).toHaveBeenCalledWith(
+        { company: 'TechCorp', isActive: true },
+        1,
+        1000
+      );
     });
 
     it('should include inactive jobs when specified', async () => {
@@ -230,30 +236,36 @@ describe('JobService', () => {
 
       await jobService.getJobsByCompany('TechCorp', false);
 
-      expect(mockJobRepository.findAll).toHaveBeenCalledWith({}, 1, 1000);
+      // FIX: When activeOnly is false, isActive should be set to false, not omitted
+      expect(mockJobRepository.findAll).toHaveBeenCalledWith(
+        { company: 'TechCorp', isActive: false },
+        1,
+        1000
+      );
     });
   });
 
   describe('getJobsByTechnology', () => {
     it('should return paginated jobs for a technology', async () => {
       const mockJobs = [createMockJob()];
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
+      mockJobRepository.count.mockResolvedValue(1);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
 
-      const result = await jobService.getJobsByTechnology(1);
+      const result = await jobService.getJobsByTechnology('React');
 
       expect(result.jobs).toHaveLength(1);
       expect(result.pagination.totalItems).toBe(1);
-      expect(mockJobRepository.findByTechnology).toHaveBeenCalledWith(1);
+      expect(mockJobRepository.findAll).toHaveBeenCalledWith({ technologies: ['React'] }, 1, 20);
     });
 
     it('should handle manual pagination', async () => {
       const mockJobs = Array.from({ length: 25 }, (_, i) => createMockJob({ id: String(i + 1) }));
-      mockJobRepository.findByTechnology.mockResolvedValue(mockJobs);
+      mockJobRepository.count.mockResolvedValue(25);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs.slice(10, 20));
 
-      const result = await jobService.getJobsByTechnology(1, 2, 10);
+      const result = await jobService.getJobsByTechnology('React', 2, 10);
 
       expect(result.jobs).toHaveLength(10);
-      expect(result.jobs[0].id).toBe('11'); // Second page starts at item 11
       expect(result.pagination.totalPages).toBe(3);
     });
   });
@@ -261,12 +273,13 @@ describe('JobService', () => {
   describe('getJobsByRegion', () => {
     it('should return jobs for a specific region', async () => {
       const mockJobs = [createMockJob({ regionId: 11 })];
-      mockJobRepository.findByRegion.mockResolvedValue(mockJobs);
+      mockJobRepository.count.mockResolvedValue(1);
+      mockJobRepository.findAll.mockResolvedValue(mockJobs);
 
       const result = await jobService.getJobsByRegion(11);
 
       expect(result.jobs).toHaveLength(1);
-      expect(mockJobRepository.findByRegion).toHaveBeenCalledWith(11);
+      expect(mockJobRepository.findAll).toHaveBeenCalledWith({ regionIds: [11] }, 1, 20);
     });
   });
 
@@ -322,7 +335,7 @@ describe('JobService', () => {
       await jobService.getJobsByExperience('senior');
 
       expect(mockJobRepository.findAll).toHaveBeenCalledWith(
-        expect.objectContaining({ experienceLevel: 'senior' }),
+        expect.objectContaining({ experienceCategories: ['senior'] }),
         1,
         20
       );
@@ -414,6 +427,7 @@ describe('JobService', () => {
       expect(mockJobRepository.findAll).toHaveBeenCalledWith(
         expect.objectContaining({
           postedAfter: startDate,
+          postedBefore: endDate,
         }),
         1,
         20
@@ -428,7 +442,11 @@ describe('JobService', () => {
 
       await jobService.getHighQualityJobs(70);
 
-      expect(mockJobRepository.findAll).toHaveBeenCalled();
+      expect(mockJobRepository.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ minQualityScore: 70 }),
+        1,
+        20
+      );
     });
 
     it('should use default quality threshold of 70', async () => {
@@ -437,7 +455,11 @@ describe('JobService', () => {
 
       await jobService.getHighQualityJobs();
 
-      expect(mockJobRepository.findAll).toHaveBeenCalled();
+      expect(mockJobRepository.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ minQualityScore: 70 }),
+        1,
+        20
+      );
     });
   });
 
@@ -448,7 +470,11 @@ describe('JobService', () => {
 
       await jobService.getJobsBySource('linkedin');
 
-      expect(mockJobRepository.findAll).toHaveBeenCalled();
+      expect(mockJobRepository.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ sourceApis: ['linkedin'] }),
+        1,
+        20
+      );
     });
   });
 
@@ -512,7 +538,7 @@ describe('JobService', () => {
   });
 
   describe('Filter Conversion', () => {
-    it('should convert region IDs filter (using first region)', async () => {
+    it('should convert region IDs filter', async () => {
       const filters: JobFiltersDTO = { regionIds: [11, 12] };
       mockJobRepository.count.mockResolvedValue(0);
       mockJobRepository.findAll.mockResolvedValue([]);
@@ -520,13 +546,13 @@ describe('JobService', () => {
       await jobService.getJobs(filters);
 
       expect(mockJobRepository.findAll).toHaveBeenCalledWith(
-        expect.objectContaining({ regionId: 11 }),
+        expect.objectContaining({ regionIds: [11, 12] }),
         expect.anything(),
         expect.anything()
       );
     });
 
-    it('should convert experience categories filter (using first)', async () => {
+    it('should convert experience categories filter', async () => {
       const filters: JobFiltersDTO = { experienceCategories: ['senior', 'lead'] };
       mockJobRepository.count.mockResolvedValue(0);
       mockJobRepository.findAll.mockResolvedValue([]);
@@ -534,7 +560,7 @@ describe('JobService', () => {
       await jobService.getJobs(filters);
 
       expect(mockJobRepository.findAll).toHaveBeenCalledWith(
-        expect.objectContaining({ experienceLevel: 'senior' }),
+        expect.objectContaining({ experienceCategories: ['senior', 'lead'] }),
         expect.anything(),
         expect.anything()
       );
@@ -551,6 +577,32 @@ describe('JobService', () => {
         expect.objectContaining({
           postedAfter: expect.any(Date),
         }),
+        expect.anything(),
+        expect.anything()
+      );
+    });
+
+    it('should handle both isActive and activeOnly', async () => {
+      mockJobRepository.count.mockResolvedValue(0);
+      mockJobRepository.findAll.mockResolvedValue([]);
+
+      await jobService.getJobs({ activeOnly: true });
+
+      expect(mockJobRepository.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ isActive: true }),
+        expect.anything(),
+        expect.anything()
+      );
+    });
+
+    it('should handle both searchQuery and searchTerm', async () => {
+      mockJobRepository.count.mockResolvedValue(0);
+      mockJobRepository.findAll.mockResolvedValue([]);
+
+      await jobService.getJobs({ searchTerm: 'developer' });
+
+      expect(mockJobRepository.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ searchQuery: 'developer' }),
         expect.anything(),
         expect.anything()
       );

@@ -31,10 +31,13 @@ describe('PostgresJobRepository', () => {
         salary_min: 50000,
         salary_max: 70000,
         experience_level: 'mid',
+        experience_category: 'mid',
         source_api: 'indeed',
+        external_id: 'ext-1',
         source_url: 'https://example.com',
         posted_date: '2024-01-15',
         is_active: true,
+        source_apis: ['indeed'],
       };
 
       mockQuery.mockResolvedValue({ rows: [mockRow], rowCount: 1 } as any);
@@ -71,10 +74,13 @@ describe('PostgresJobRepository', () => {
           salary_min: 50000,
           salary_max: 70000,
           experience_level: 'mid',
+          experience_category: 'mid',
           source_api: 'indeed',
+          external_id: 'ext-1',
           source_url: 'https://example.com',
           posted_date: '2024-01-15',
           is_active: true,
+          source_apis: ['indeed'],
         },
       ];
 
@@ -111,13 +117,15 @@ describe('PostgresJobRepository', () => {
       expect(sql).toContain('j.is_active = true');
       expect(sql).toContain('j.region_id = $1');
       expect(sql).toContain('t2.name = ANY($2)');
-      expect(sql).toContain('j.experience_level = $3');
-      expect(sql).toContain('j.is_remote = $4');
-      expect(sql).toContain('j.salary_min >= $5');
-      expect(sql).toContain('j.posted_date >= $6');
+      // FIX: Changed from j.experience_level to j.experience_category
+      expect(sql).toContain('j.experience_category = $4');
+      expect(sql).toContain('j.is_remote = $5');
+      expect(sql).toContain('j.salary_min >= $6');
+      expect(sql).toContain('j.posted_date >= $7');
       expect(params).toEqual([
         5,
         ['React', 'Node.js'],
+        2, // technologies.length
         'senior',
         true,
         60000,
@@ -406,22 +414,35 @@ describe('PostgresJobRepository', () => {
 
       await repository.findRecent(7);
 
+      // FIX: Expect the full query with pagination parameters
       expect(mockQuery).toHaveBeenCalledWith(
-        expect.stringContaining('WHERE j.posted_date > NOW() - $1::interval'),
-        ['7 days']
+        expect.stringContaining(
+          'WHERE j.is_active = true AND j.posted_date > NOW() - $1::interval'
+        ),
+        ['7 days', 10000, 0]
       );
     });
   });
 
   describe('findByTechnology', () => {
     it('should find jobs by technology ID', async () => {
-      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 } as any);
+      // Mock the technology name lookup first
+      mockQuery
+        .mockResolvedValueOnce({
+          rows: [{ name: 'React' }],
+          rowCount: 1,
+        } as any) // Get technology name
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // Find jobs
 
       await repository.findByTechnology(5);
 
-      expect(mockQuery).toHaveBeenCalledWith(
-        expect.stringContaining('WHERE jt.technology_id = $1'),
-        [5]
+      expect(mockQuery).toHaveBeenNthCalledWith(1, 'SELECT name FROM technologies WHERE id = $1', [
+        5,
+      ]);
+      expect(mockQuery).toHaveBeenNthCalledWith(
+        2,
+        expect.stringContaining('t2.name = ANY($1)'), // Changed from $2 to $1
+        expect.arrayContaining([['React'], 1, 10000, 0]) // Complete params array
       );
     });
   });
@@ -432,9 +453,11 @@ describe('PostgresJobRepository', () => {
 
       await repository.findByRegion(3);
 
-      expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('WHERE j.region_id = $1'), [
-        3,
-      ]);
+      // FIX: Expect regionIds array format and pagination parameters
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining('WHERE j.is_active = true AND j.region_id = ANY($1)'),
+        [[3], 10000, 0]
+      );
     });
   });
 

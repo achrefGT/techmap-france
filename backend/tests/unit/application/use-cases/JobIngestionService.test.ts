@@ -65,9 +65,6 @@ describe('JobIngestionService', () => {
       count: jest.fn(),
       save: jest.fn(),
       saveMany: jest.fn(),
-      findRecent: jest.fn(),
-      findByTechnology: jest.fn(),
-      findByRegion: jest.fn(),
       deactivateOldJobs: jest.fn(),
     } as any;
 
@@ -174,7 +171,6 @@ describe('JobIngestionService', () => {
       mockTechDetectorDetect.mockResolvedValue(['Vue', 'Angular']);
       mockExperienceDetectorDetect.mockResolvedValue('senior');
 
-      // Mock saveMany to return empty result since no jobs will be saved
       const bulkResult: BulkSaveResult = {
         inserted: 0,
         updated: 0,
@@ -201,7 +197,6 @@ describe('JobIngestionService', () => {
       mockTechDetectorDetect.mockResolvedValue([]);
       mockExperienceDetectorDetect.mockResolvedValue('senior');
 
-      // Mock saveMany to return empty result since no jobs will be saved
       const bulkResult: BulkSaveResult = {
         inserted: 0,
         updated: 0,
@@ -232,7 +227,6 @@ describe('JobIngestionService', () => {
       mockTechDetectorDetect.mockResolvedValue(['React']);
       mockExperienceDetectorDetect.mockResolvedValue('senior');
 
-      // Mock saveMany to return empty result since no quality jobs will be saved
       const bulkResult: BulkSaveResult = {
         inserted: 0,
         updated: 0,
@@ -344,7 +338,6 @@ describe('JobIngestionService', () => {
 
       mockTechDetectorDetect.mockRejectedValue(new Error('Network error'));
 
-      // Mock saveMany to return empty result since job will fail
       const bulkResult: BulkSaveResult = {
         inserted: 0,
         updated: 0,

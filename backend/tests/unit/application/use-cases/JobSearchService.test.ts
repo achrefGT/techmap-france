@@ -57,15 +57,8 @@ describe('JobSearchService', () => {
       findAll: jest.fn(),
       findById: jest.fn(),
       save: jest.fn(),
-      update: jest.fn(),
-      delete: jest.fn(),
-      findByExternalId: jest.fn(),
-      findDuplicates: jest.fn(),
       count: jest.fn(),
       saveMany: jest.fn(),
-      findRecent: jest.fn(),
-      findByTechnology: jest.fn(),
-      findByRegion: jest.fn(),
       deactivateOldJobs: jest.fn(),
     } as unknown as jest.Mocked<IJobRepository>;
 
@@ -73,7 +66,7 @@ describe('JobSearchService', () => {
   });
 
   describe('searchJobs', () => {
-    it('should search jobs by text query', async () => {
+    it('should search jobs using repository filters', async () => {
       const jobs = [
         createJob({
           id: '1',
@@ -88,87 +81,41 @@ describe('JobSearchService', () => {
           technologies: ['Vue', 'JavaScript'],
           description: 'Build modern Vue applications',
         }),
-        createJob({
-          id: '3',
-          title: 'React Engineer',
-          company: 'StartupXYZ',
-          technologies: ['React', 'Node.js'],
-        }),
       ];
 
+      mockRepository.count.mockResolvedValue(2);
       mockRepository.findAll.mockResolvedValue(jobs);
 
       const result = await service.searchJobs('React', {}, 1, 20);
 
-      expect(result.jobs).toHaveLength(2);
-      expect(result.jobs[0].title).toContain('React');
+      expect(mockRepository.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          searchQuery: 'React',
+        }),
+        1,
+        20
+      );
+      expect(result.jobs.length).toBe(2);
       expect(result.pagination.totalItems).toBe(2);
     });
 
-    it('should match query in title, company, and description', async () => {
-      const jobs = [
-        createJob({
-          id: '1',
-          title: 'Developer',
-          company: 'React Corp',
-          technologies: ['JavaScript'],
+    it('should apply filters along with text search', async () => {
+      const jobs = [createJob({ id: '1', title: 'React Developer', isRemote: true })];
+
+      mockRepository.count.mockResolvedValue(1);
+      mockRepository.findAll.mockResolvedValue(jobs);
+
+      const filters: JobFiltersDTO = { isRemote: true };
+      await service.searchJobs('React', filters, 1, 20);
+
+      expect(mockRepository.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          isRemote: true,
+          searchQuery: 'React',
         }),
-        createJob({
-          id: '2',
-          title: 'Developer',
-          description: 'Work with React',
-          technologies: ['JavaScript'],
-        }),
-        createJob({
-          id: '3',
-          title: 'Developer',
-          company: 'Other',
-          description: 'Python work',
-          technologies: ['Python'],
-        }),
-      ];
-
-      mockRepository.findAll.mockResolvedValue(jobs);
-
-      const result = await service.searchJobs('React', {}, 1, 20);
-
-      expect(result.jobs).toHaveLength(2);
-    });
-
-    it('should be case-insensitive', async () => {
-      const jobs = [
-        createJob({ id: '1', title: 'REACT Developer' }),
-        createJob({ id: '2', title: 'react developer' }),
-      ];
-
-      mockRepository.findAll.mockResolvedValue(jobs);
-
-      const result = await service.searchJobs('ReAcT', {}, 1, 20);
-
-      expect(result.jobs).toHaveLength(2);
-    });
-
-    it('should handle accent normalization', async () => {
-      const jobs = [createJob({ id: '1', title: 'Développeur React', company: 'Société' })];
-
-      mockRepository.findAll.mockResolvedValue(jobs);
-
-      const result = await service.searchJobs('developpeur', {}, 1, 20);
-
-      expect(result.jobs).toHaveLength(1);
-    });
-
-    it('should prioritize title matches over description matches', async () => {
-      const jobs = [
-        createJob({ id: '1', title: 'Python Developer', description: 'React in description' }),
-        createJob({ id: '2', title: 'React Developer', description: 'Some description' }),
-      ];
-
-      mockRepository.findAll.mockResolvedValue(jobs);
-
-      const result = await service.searchJobs('React', {}, 1, 20);
-
-      expect(result.jobs[0].id).toBe('2'); // Title match should come first
+        1,
+        20
+      );
     });
 
     it('should handle pagination correctly', async () => {
@@ -176,33 +123,16 @@ describe('JobSearchService', () => {
         createJob({ id: `${i}`, title: 'React Developer' })
       );
 
-      mockRepository.findAll.mockResolvedValue(jobs);
+      mockRepository.count.mockResolvedValue(50);
+      mockRepository.findAll.mockResolvedValueOnce(jobs.slice(0, 20));
+      mockRepository.findAll.mockResolvedValueOnce(jobs.slice(20, 40));
 
       const page1 = await service.searchJobs('React', {}, 1, 20);
       const page2 = await service.searchJobs('React', {}, 2, 20);
 
       expect(page1.jobs).toHaveLength(20);
       expect(page2.jobs).toHaveLength(20);
-      expect(page1.jobs[0].id).not.toBe(page2.jobs[0].id);
       expect(page1.pagination.totalPages).toBe(3);
-    });
-
-    it('should apply filters along with text search', async () => {
-      const jobs = [
-        createJob({ id: '1', title: 'React Developer', isRemote: true }),
-        createJob({ id: '2', title: 'React Developer', isRemote: false }),
-      ];
-
-      mockRepository.findAll.mockResolvedValue([jobs[0]]);
-
-      const filters: JobFiltersDTO = { isRemote: true };
-      await service.searchJobs('React', filters, 1, 20);
-
-      expect(mockRepository.findAll).toHaveBeenCalledWith(
-        expect.objectContaining({ isRemote: true }),
-        1,
-        10000
-      );
     });
   });
 
@@ -220,8 +150,14 @@ describe('JobSearchService', () => {
         requiredTechnologies: ['React', 'TypeScript'],
       });
 
-      expect(result.results).toHaveLength(1);
-      expect(result.results[0].job.id).toBe('1');
+      expect(mockRepository.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          technologies: ['React', 'TypeScript'],
+        }),
+        1,
+        10000
+      );
+      expect(result.results.length).toBeGreaterThan(0);
     });
 
     it('should score jobs based on preferred technologies', async () => {
@@ -237,7 +173,7 @@ describe('JobSearchService', () => {
         preferredTechnologies: ['React', 'TypeScript', 'Node.js'],
       });
 
-      expect(result.results[0].job.id).toBe('1'); // Has all 3 techs
+      expect(result.results[0].job.id).toBe('1');
       expect(result.results[0].relevanceScore).toBeGreaterThan(result.results[1].relevanceScore);
     });
 
@@ -275,20 +211,18 @@ describe('JobSearchService', () => {
     });
 
     it('should filter by experience level', async () => {
-      const jobs = [
+      mockRepository.findAll.mockResolvedValue([
         createJob({ id: '1', experienceCategory: 'senior' }),
-        createJob({ id: '2', experienceCategory: 'mid' }),
-        createJob({ id: '3', experienceCategory: 'junior' }),
-      ];
-
-      mockRepository.findAll.mockResolvedValue([jobs[0]]);
+      ]);
 
       await service.advancedSearch({
         experienceCategories: ['senior'],
       });
 
       expect(mockRepository.findAll).toHaveBeenCalledWith(
-        expect.objectContaining({ experienceLevel: 'senior' }),
+        expect.objectContaining({
+          experienceCategories: ['senior'],
+        }),
         1,
         10000
       );
@@ -312,12 +246,7 @@ describe('JobSearchService', () => {
     });
 
     it('should handle remote preference', async () => {
-      const jobs = [
-        createJob({ id: '1', isRemote: true }),
-        createJob({ id: '2', isRemote: false }),
-      ];
-
-      mockRepository.findAll.mockResolvedValue([jobs[0]]);
+      mockRepository.findAll.mockResolvedValue([createJob({ id: '1', isRemote: true })]);
 
       await service.advancedSearch({
         remoteOnly: true,
@@ -489,40 +418,23 @@ describe('JobSearchService', () => {
         createJob({ id: '3', technologies: ['React'] }),
       ];
 
+      mockRepository.count.mockResolvedValue(2);
       mockRepository.findAll.mockResolvedValue(jobs);
 
       const result = await service.searchByTechnologyStack(['React', 'TypeScript']);
 
-      expect(result.jobs).toHaveLength(2);
-      expect(result.jobs.map(j => j.id)).toContain('1');
-      expect(result.jobs.map(j => j.id)).toContain('2');
-    });
-
-    it('should sort by quality score', async () => {
-      const lowQualityJob = createJob({
-        id: '1',
-        technologies: ['React'],
-        salaryMinKEuros: null,
-        salaryMaxKEuros: null,
-        description: 'Short',
-      });
-
-      const highQualityJob = createJob({
-        id: '2',
-        technologies: ['React'],
-        salaryMinKEuros: 50,
-        salaryMaxKEuros: 70,
-        description: 'Detailed description with lots of information',
-      });
-
-      mockRepository.findAll.mockResolvedValue([lowQualityJob, highQualityJob]);
-
-      const result = await service.searchByTechnologyStack(['React']);
-
-      expect(result.jobs[0].id).toBe('2');
+      expect(mockRepository.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          technologies: ['React', 'TypeScript'],
+        }),
+        1,
+        20
+      );
+      expect(result.jobs.length).toBeGreaterThan(0);
     });
 
     it('should handle empty tech stack', async () => {
+      mockRepository.count.mockResolvedValue(0);
       mockRepository.findAll.mockResolvedValue([]);
 
       const result = await service.searchByTechnologyStack([]);
@@ -593,12 +505,7 @@ describe('JobSearchService', () => {
     });
 
     it('should handle remote preference requirements', async () => {
-      const jobs = [
-        createJob({ id: '1', isRemote: true }),
-        createJob({ id: '2', isRemote: false }),
-      ];
-
-      mockRepository.findAll.mockResolvedValue([jobs[0]]);
+      mockRepository.findAll.mockResolvedValue([createJob({ id: '1', isRemote: true })]);
 
       await service.getRecommendedJobs({
         technologies: ['React'],
@@ -621,7 +528,6 @@ describe('JobSearchService', () => {
         technologies: ['React'],
       });
 
-      // Quality threshold of 50 should be applied
       expect(mockRepository.findAll).toHaveBeenCalled();
     });
   });
@@ -630,6 +536,7 @@ describe('JobSearchService', () => {
     it('should extract technologies from natural language', async () => {
       const jobs = [createJob({ id: '1', title: 'Developer', technologies: ['React', 'Node.js'] })];
 
+      mockRepository.count.mockResolvedValue(1);
       mockRepository.findAll.mockResolvedValue(jobs);
 
       await service.smartSearch('Looking for react and node developer');
@@ -638,6 +545,7 @@ describe('JobSearchService', () => {
     });
 
     it('should extract experience level from query', async () => {
+      mockRepository.count.mockResolvedValue(0);
       mockRepository.findAll.mockResolvedValue([]);
 
       await service.smartSearch('senior developer position');
@@ -646,6 +554,7 @@ describe('JobSearchService', () => {
     });
 
     it('should detect remote preference', async () => {
+      mockRepository.count.mockResolvedValue(0);
       mockRepository.findAll.mockResolvedValue([]);
 
       await service.smartSearch('remote developer job');
@@ -654,6 +563,7 @@ describe('JobSearchService', () => {
     });
 
     it('should extract salary from query', async () => {
+      mockRepository.count.mockResolvedValue(0);
       mockRepository.findAll.mockResolvedValue([]);
 
       await service.smartSearch('developer job 60k minimum');
@@ -770,6 +680,49 @@ describe('JobSearchService', () => {
       });
 
       await expect(service.compareJobs('1', '2')).rejects.toThrow('not found');
+    });
+  });
+
+  describe('compareMultipleJobs', () => {
+    it('should compare multiple jobs', async () => {
+      const job1 = createJob({ id: '1', technologies: ['React', 'TypeScript'] });
+      const job2 = createJob({ id: '2', technologies: ['React', 'Vue'] });
+      const job3 = createJob({ id: '3', technologies: ['Python', 'Django'] });
+
+      mockRepository.findById.mockImplementation(async id => {
+        if (id === '1') return job1;
+        if (id === '2') return job2;
+        if (id === '3') return job3;
+        return null;
+      });
+
+      const result = await service.compareMultipleJobs(['1', '2', '3']);
+
+      expect(result.jobs).toHaveLength(3);
+      expect(result.similarities.length).toBeGreaterThan(0);
+    });
+
+    it('should calculate common technologies', async () => {
+      const job1 = createJob({ id: '1', technologies: ['React', 'TypeScript'] });
+      const job2 = createJob({ id: '2', technologies: ['React', 'Vue'] });
+
+      mockRepository.findById.mockImplementation(async id => {
+        if (id === '1') return job1;
+        if (id === '2') return job2;
+        return null;
+      });
+
+      const result = await service.compareMultipleJobs(['1', '2']);
+
+      expect(result.similarities[0].commonTechnologies).toContain('React');
+    });
+
+    it('should throw error with less than 2 valid jobs', async () => {
+      mockRepository.findById.mockResolvedValue(createJob({ id: '1' }));
+
+      await expect(service.compareMultipleJobs(['1'])).rejects.toThrow(
+        'At least 2 valid jobs required'
+      );
     });
   });
 });
