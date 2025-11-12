@@ -4,7 +4,13 @@ import { IRegionRepository } from '../../domain/repositories/IRegionRepository';
 import { TrendAnalysisService } from '../../domain/services/TrendAnalysisService';
 import { AnalyticsMapper } from '../mappers/AnalyticsMapper';
 import { DashboardStatsDTO, SalaryStatsDTO, MarketInsightsDTO } from '../dtos/AnalyticsDTO';
+import { Job } from '../../domain/entities/Job';
 
+/**
+ * Analytics Service
+ *
+ * UPDATED: Uses new repository filters instead of deprecated methods
+ */
 export class AnalyticsService {
   constructor(
     private jobRepository: IJobRepository,
@@ -20,13 +26,13 @@ export class AnalyticsService {
     const [totalJobs, activeJobs, recentJobs, technologies, regions, allJobs] = await Promise.all([
       this.jobRepository.count({}),
       this.jobRepository.count({ isActive: true }),
-      this.jobRepository.findRecent(7),
+      this.jobRepository.findAll({ recentDays: 7 }, 1, 10000),
       this.technologyRepository.findAll(),
       this.regionRepository.findAll(),
       this.jobRepository.findAll({}, 1, 1000), // Sample for calculations
     ]);
 
-    const totalCompanies = new Set(allJobs.map(j => j.company)).size;
+    const totalCompanies = new Set(allJobs.map((j: Job) => j.company)).size;
 
     return AnalyticsMapper.toDashboardStatsDTO(
       totalJobs,
@@ -50,9 +56,11 @@ export class AnalyticsService {
     const technologies = await this.technologyRepository.findAll();
     const byTechnology = await Promise.all(
       technologies.map(async tech => {
-        const techJobs = await this.jobRepository.findByTechnology(tech.id!);
+        // Use new filter format with technology name
+        const techJobs = await this.jobRepository.findAll({ technologies: [tech.name] }, 1, 10000);
+
         const salaries = techJobs
-          .map(j => j.getSalaryMidpoint())
+          .map((j: Job) => j.getSalaryMidpoint())
           .filter((s): s is number => s !== null);
 
         return {
@@ -67,9 +75,11 @@ export class AnalyticsService {
     const regions = await this.regionRepository.findAll();
     const byRegion = await Promise.all(
       regions.map(async region => {
-        const regionJobs = await this.jobRepository.findByRegion(region.id);
+        // Use new filter format with regionIds array
+        const regionJobs = await this.jobRepository.findAll({ regionIds: [region.id] }, 1, 10000);
+
         const salaries = regionJobs
-          .map(j => j.getSalaryMidpoint())
+          .map((j: Job) => j.getSalaryMidpoint())
           .filter((s): s is number => s !== null);
 
         return {
@@ -112,7 +122,9 @@ export class AnalyticsService {
     const regions = await this.regionRepository.findAll();
     const topRegions = await Promise.all(
       regions.map(async region => {
-        const jobs = await this.jobRepository.findByRegion(region.id);
+        // Use new filter format
+        const jobs = await this.jobRepository.findAll({ regionIds: [region.id] }, 1, 10000);
+
         return {
           regionId: region.id,
           regionName: region.name,
@@ -127,9 +139,9 @@ export class AnalyticsService {
 
     // Get top companies
     const allJobs = await this.jobRepository.findAll({}, 1, 10000);
-    const companyMap = new Map<string, { jobs: any[]; technologies: Set<string> }>();
+    const companyMap = new Map<string, { jobs: Job[]; technologies: Set<string> }>();
 
-    allJobs.forEach(job => {
+    allJobs.forEach((job: Job) => {
       if (!companyMap.has(job.company)) {
         companyMap.set(job.company, { jobs: [], technologies: new Set() });
       }
@@ -141,14 +153,16 @@ export class AnalyticsService {
     const topCompanies = Array.from(companyMap.entries())
       .map(([companyName, data]) => {
         const salaries = data.jobs
-          .map(j => j.getSalaryMidpoint())
+          .map((j: Job) => j.getSalaryMidpoint())
           .filter((s): s is number => s !== null);
 
         return {
           companyName,
           jobCount: data.jobs.length,
           averageSalary:
-            salaries.length > 0 ? salaries.reduce((a, b) => a + b, 0) / salaries.length : null,
+            salaries.length > 0
+              ? salaries.reduce((a: number, b: number) => a + b, 0) / salaries.length
+              : null,
           topTechnologies: Array.from(data.technologies).slice(0, 5),
         };
       })

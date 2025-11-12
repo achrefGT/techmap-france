@@ -13,17 +13,73 @@ export class TechnologyController {
 
   /**
    * GET /api/technologies
-   * Get all technologies
+   * Get all technologies with optional filters
+   *
+   * Supports all filtering options:
+   * - category (frontend, backend, etc.)
+   * - popularityLevel (trending, popular, common, niche)
+   * - inDemandOnly (boolean - jobCount > 100)
+   * - q (search query)
+   * - limit (for top technologies)
    */
-  getAllTechnologies = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+  getAllTechnologies = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const technologies = await this.technologyService.getAllTechnologies();
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : undefined;
+      const category = req.query.category as string | undefined;
+      const popularityLevel = req.query.popularityLevel as string | undefined;
+      const inDemandOnly = req.query.inDemandOnly === 'true';
+      const searchQuery = req.query.q as string | undefined;
+
+      let technologies = await this.technologyService.getAllTechnologies();
+
+      // Apply category filter
+      if (category) {
+        technologies = technologies.filter(tech => tech.category === category);
+      }
+
+      // Apply popularity level filter
+      if (popularityLevel) {
+        const validLevels = ['trending', 'popular', 'common', 'niche'];
+        if (!validLevels.includes(popularityLevel)) {
+          res.status(400).json({
+            error: 'Invalid popularity level',
+            message: `Popularity level must be one of: ${validLevels.join(', ')}`,
+          });
+          return;
+        }
+        technologies = technologies.filter(tech => tech.popularityLevel === popularityLevel);
+      }
+
+      // Apply in-demand filter
+      if (inDemandOnly) {
+        technologies = technologies.filter(tech => tech.isInDemand);
+      }
+
+      // Apply search filter
+      if (searchQuery) {
+        const query = searchQuery.toLowerCase().trim();
+        technologies = technologies.filter(
+          tech =>
+            tech.name.toLowerCase().includes(query) ||
+            tech.displayName.toLowerCase().includes(query)
+        );
+      }
+
+      // Sort by job count (for trending) and apply limit
+      if (limit) {
+        technologies = technologies.sort((a, b) => b.jobCount - a.jobCount).slice(0, limit);
+      }
 
       res.json({
         success: true,
         data: technologies,
         meta: {
           count: technologies.length,
+          ...(category && { category }),
+          ...(popularityLevel && { popularityLevel }),
+          ...(inDemandOnly && { inDemandOnly }),
+          ...(searchQuery && { query: searchQuery }),
+          ...(limit && { limit }),
         },
       });
     } catch (error) {
@@ -38,6 +94,7 @@ export class TechnologyController {
   getTechnologyById = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const id = parseInt(req.params.id);
+      const includeStats = req.query.includeStats === 'true';
 
       if (isNaN(id)) {
         res.status(400).json({
@@ -47,20 +104,34 @@ export class TechnologyController {
         return;
       }
 
-      const technology = await this.technologyService.getTechnologyById(id);
-
-      if (!technology) {
-        res.status(404).json({
-          error: 'Technology not found',
-          message: `No technology found with ID: ${id}`,
+      // If stats requested, use getTechnologyStats, otherwise just get the technology
+      if (includeStats) {
+        const stats = await this.technologyService.getTechnologyStats(id);
+        if (!stats) {
+          res.status(404).json({
+            error: 'Technology not found',
+            message: `No technology found with ID: ${id}`,
+          });
+          return;
+        }
+        res.json({
+          success: true,
+          data: stats,
         });
-        return;
+      } else {
+        const technology = await this.technologyService.getTechnologyById(id);
+        if (!technology) {
+          res.status(404).json({
+            error: 'Technology not found',
+            message: `No technology found with ID: ${id}`,
+          });
+          return;
+        }
+        res.json({
+          success: true,
+          data: technology,
+        });
       }
-
-      res.json({
-        success: true,
-        data: technology,
-      });
     } catch (error) {
       next(error);
     }
@@ -102,185 +173,23 @@ export class TechnologyController {
   };
 
   /**
-   * GET /api/technologies/category/:category
-   * Get technologies by category
-   */
-  getTechnologiesByCategory = async (
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ): Promise<void> => {
-    try {
-      const { category } = req.params;
-
-      const technologies = await this.technologyService.getTechnologiesByCategory(category);
-
-      res.json({
-        success: true,
-        data: technologies,
-        meta: {
-          category,
-          count: technologies.length,
-        },
-      });
-    } catch (error) {
-      next(error);
-    }
-  };
-
-  /**
-   * GET /api/technologies/trending
-   * Get trending technologies (most job postings)
-   */
-  getTrendingTechnologies = async (
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ): Promise<void> => {
-    try {
-      const limit = parseInt(req.query.limit as string) || 10;
-
-      const technologies = await this.technologyService.getAllTechnologies();
-
-      // Sort by job count and take top N
-      const trending = technologies.sort((a, b) => b.jobCount - a.jobCount).slice(0, limit);
-
-      res.json({
-        success: true,
-        data: trending,
-        meta: {
-          limit,
-          count: trending.length,
-        },
-      });
-    } catch (error) {
-      next(error);
-    }
-  };
-
-  /**
-   * GET /api/technologies/in-demand
-   * Get technologies in high demand (jobCount > threshold)
-   */
-  getInDemandTechnologies = async (
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ): Promise<void> => {
-    try {
-      const threshold = parseInt(req.query.threshold as string) || 100;
-
-      const technologies = await this.technologyService.getAllTechnologies();
-
-      const inDemand = technologies.filter(tech => tech.jobCount >= threshold);
-
-      res.json({
-        success: true,
-        data: inDemand,
-        meta: {
-          threshold,
-          count: inDemand.length,
-        },
-      });
-    } catch (error) {
-      next(error);
-    }
-  };
-
-  /**
-   * GET /api/technologies/popular
-   * Get popular technologies (categorized by popularity level)
-   */
-  getPopularTechnologies = async (
-    _req: Request,
-    res: Response,
-    next: NextFunction
-  ): Promise<void> => {
-    try {
-      const technologies = await this.technologyService.getAllTechnologies();
-
-      const grouped = {
-        trending: technologies.filter(t => t.popularityLevel === 'trending'),
-        popular: technologies.filter(t => t.popularityLevel === 'popular'),
-        common: technologies.filter(t => t.popularityLevel === 'common'),
-        niche: technologies.filter(t => t.popularityLevel === 'niche'),
-      };
-
-      res.json({
-        success: true,
-        data: grouped,
-        meta: {
-          total: technologies.length,
-          breakdown: {
-            trending: grouped.trending.length,
-            popular: grouped.popular.length,
-            common: grouped.common.length,
-            niche: grouped.niche.length,
-          },
-        },
-      });
-    } catch (error) {
-      next(error);
-    }
-  };
-
-  /**
-   * GET /api/technologies/search
-   * Search technologies by name
-   */
-  searchTechnologies = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const query = ((req.query.q as string) || '').toLowerCase().trim();
-
-      if (!query) {
-        res.status(400).json({
-          error: 'Missing search query',
-          message: 'Query parameter "q" is required',
-        });
-        return;
-      }
-
-      const technologies = await this.technologyService.getAllTechnologies();
-
-      const results = technologies.filter(
-        tech =>
-          tech.name.toLowerCase().includes(query) || tech.displayName.toLowerCase().includes(query)
-      );
-
-      res.json({
-        success: true,
-        data: results,
-        meta: {
-          query,
-          count: results.length,
-        },
-      });
-    } catch (error) {
-      next(error);
-    }
-  };
-
-  /**
-   * GET /api/technologies/compare
+   * POST /api/technologies/compare
    * Compare multiple technologies
    */
   compareTechnologies = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const ids = ((req.query.ids as string) || '')
-        .split(',')
-        .map(id => parseInt(id.trim()))
-        .filter(id => !isNaN(id));
+      const { technologyIds } = req.body;
 
-      if (ids.length === 0) {
+      if (!Array.isArray(technologyIds) || technologyIds.length < 2 || technologyIds.length > 5) {
         res.status(400).json({
-          error: 'Missing technology IDs',
-          message: 'Query parameter "ids" is required (comma-separated)',
+          error: 'Invalid technology IDs',
+          message: 'technologyIds must be an array with 2-5 technology IDs',
         });
         return;
       }
 
       const technologies = await Promise.all(
-        ids.map(id => this.technologyService.getTechnologyStats(id))
+        technologyIds.map(id => this.technologyService.getTechnologyStats(id))
       );
 
       const validTechnologies = technologies.filter(t => t !== null);
@@ -297,7 +206,7 @@ export class TechnologyController {
         success: true,
         data: validTechnologies,
         meta: {
-          requested: ids.length,
+          requested: technologyIds.length,
           found: validTechnologies.length,
         },
       });

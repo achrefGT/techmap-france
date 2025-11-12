@@ -7,18 +7,29 @@ import { Job } from '../../domain/entities/Job';
 import { ExperienceLevel } from '../../domain/constants/JobConfig';
 import { query } from './connection';
 
+/**
+ * UPDATED: PostgreSQL Job Repository
+ *
+ * Main changes:
+ * - Enhanced buildWhereClause() to support all new filters
+ * - Kept findRecent(), findByTechnology(), findByRegion() for backward compatibility
+ *   (but marked as deprecated - use findAll() instead)
+ */
 export class PostgresJobRepository implements IJobRepository {
   async findById(id: string): Promise<Job | null> {
     const result = await query('SELECT * FROM jobs WHERE id = $1', [id]);
     return result.rows[0] ? this.mapToEntity(result.rows[0]) : null;
   }
 
+  /**
+   * UPDATED: Enhanced to support comprehensive filtering
+   */
   async findAll(filters: JobFilters, page: number = 1, limit: number = 25): Promise<Job[]> {
     const offset = (page - 1) * limit;
     const { whereClause, params } = this.buildWhereClause(filters);
 
     const sql = `
-      SELECT j.*, ARRAY_AGG(t.name) as technologies
+      SELECT j.*, ARRAY_AGG(DISTINCT t.name) FILTER (WHERE t.name IS NOT NULL) as technologies
       FROM jobs j
       LEFT JOIN job_technologies jt ON j.id = jt.job_id
       LEFT JOIN technologies t ON jt.technology_id = t.id
@@ -32,9 +43,20 @@ export class PostgresJobRepository implements IJobRepository {
     return result.rows.map(row => this.mapToEntity(row));
   }
 
+  /**
+   * UPDATED: Enhanced to support comprehensive filtering
+   */
   async count(filters: JobFilters): Promise<number> {
     const { whereClause, params } = this.buildWhereClause(filters);
-    const sql = `SELECT COUNT(DISTINCT j.id) FROM jobs j ${whereClause}`;
+
+    // Note: COUNT(DISTINCT j.id) is needed when joining with technologies
+    const sql = `
+      SELECT COUNT(DISTINCT j.id) 
+      FROM jobs j 
+      ${this.needsJoinForFilters(filters) ? this.getJoinsClause() : ''}
+      ${whereClause}
+    `;
+
     const result = await query(sql, params);
     return parseInt(result.rows[0].count);
   }
@@ -153,50 +175,33 @@ export class PostgresJobRepository implements IJobRepository {
     return result;
   }
 
+  /**
+   * DEPRECATED: Use findAll({ recentDays: days }) instead
+   * Kept for backward compatibility
+   */
   async findRecent(days: number): Promise<Job[]> {
-    const sql = `
-      SELECT j.*, ARRAY_AGG(t.name) as technologies
-      FROM jobs j
-      LEFT JOIN job_technologies jt ON j.id = jt.job_id
-      LEFT JOIN technologies t ON jt.technology_id = t.id
-      WHERE j.posted_date > NOW() - $1::interval
-        AND j.is_active = true
-      GROUP BY j.id
-      ORDER BY j.posted_date DESC
-    `;
-
-    const result = await query(sql, [`${days} days`]);
-    return result.rows.map(row => this.mapToEntity(row));
+    return this.findAll({ recentDays: days }, 1, 10000);
   }
 
+  /**
+   * DEPRECATED: Use findAll({ technologies: [techName] }) instead
+   * Kept for backward compatibility
+   */
   async findByTechnology(techId: number): Promise<Job[]> {
-    const sql = `
-      SELECT j.*, ARRAY_AGG(t.name) as technologies
-      FROM jobs j
-      JOIN job_technologies jt ON j.id = jt.job_id
-      LEFT JOIN technologies t ON jt.technology_id = t.id
-      WHERE jt.technology_id = $1 AND j.is_active = true
-      GROUP BY j.id
-      ORDER BY j.posted_date DESC
-    `;
+    // Need to get technology name from ID
+    const techResult = await query('SELECT name FROM technologies WHERE id = $1', [techId]);
+    if (techResult.rows.length === 0) return [];
 
-    const result = await query(sql, [techId]);
-    return result.rows.map(row => this.mapToEntity(row));
+    const techName = techResult.rows[0].name;
+    return this.findAll({ technologies: [techName] }, 1, 10000);
   }
 
+  /**
+   * DEPRECATED: Use findAll({ regionIds: [regionId] }) instead
+   * Kept for backward compatibility
+   */
   async findByRegion(regionId: number): Promise<Job[]> {
-    const sql = `
-      SELECT j.*, ARRAY_AGG(t.name) as technologies
-      FROM jobs j
-      LEFT JOIN job_technologies jt ON j.id = jt.job_id
-      LEFT JOIN technologies t ON jt.technology_id = t.id
-      WHERE j.region_id = $1 AND j.is_active = true
-      GROUP BY j.id
-      ORDER BY j.posted_date DESC
-    `;
-
-    const result = await query(sql, [regionId]);
-    return result.rows.map(row => this.mapToEntity(row));
+    return this.findAll({ regionIds: [regionId] }, 1, 10000);
   }
 
   async deactivateOldJobs(days: number): Promise<number> {
@@ -211,46 +216,136 @@ export class PostgresJobRepository implements IJobRepository {
     return result.rowCount || 0;
   }
 
+  /**
+   * UPDATED: Build WHERE clause supporting all filter types
+   */
   private buildWhereClause(filters: JobFilters): { whereClause: string; params: unknown[] } {
-    const conditions: string[] = ['j.is_active = true'];
+    const conditions: string[] = [];
     const params: unknown[] = [];
 
-    if (filters.regionId) {
+    // Active filter (default to true unless explicitly set)
+    if (filters.isActive !== undefined) {
+      params.push(filters.isActive);
+      conditions.push(`j.is_active = $${params.length}`);
+    } else {
+      conditions.push('j.is_active = true'); // Default behavior
+    }
+
+    // Region filter - support multiple regions (OR condition)
+    if (filters.regionIds && filters.regionIds.length > 0) {
+      params.push(filters.regionIds);
+      conditions.push(`j.region_id = ANY($${params.length})`);
+    } else if (filters.regionId) {
+      // Backward compatibility with single regionId
       params.push(filters.regionId);
       conditions.push(`j.region_id = $${params.length}`);
     }
 
+    // Technology filter - ALL technologies must be present (AND condition)
     if (filters.technologies && filters.technologies.length > 0) {
       params.push(filters.technologies);
-      conditions.push(`EXISTS (
-        SELECT 1 FROM job_technologies jt2
-        JOIN technologies t2 ON jt2.technology_id = t2.id
-        WHERE jt2.job_id = j.id AND t2.name = ANY($${params.length})
-      )`);
+      conditions.push(`
+        (SELECT COUNT(DISTINCT t2.name) 
+         FROM job_technologies jt2
+         JOIN technologies t2 ON jt2.technology_id = t2.id
+         WHERE jt2.job_id = j.id AND t2.name = ANY($${params.length})
+        ) = $${params.length + 1}
+      `);
+      params.push(filters.technologies.length);
     }
 
-    if (filters.experienceLevel) {
+    // Experience filter - support multiple levels (OR condition)
+    if (filters.experienceCategories && filters.experienceCategories.length > 0) {
+      params.push(filters.experienceCategories);
+      conditions.push(`j.experience_category = ANY($${params.length})`);
+    } else if (filters.experienceLevel) {
+      // Backward compatibility with single experienceLevel
       params.push(filters.experienceLevel);
-      conditions.push(`j.experience_level = $${params.length}`);
+      conditions.push(`j.experience_category = $${params.length}`);
     }
 
+    // Remote filter
     if (filters.isRemote !== undefined) {
       params.push(filters.isRemote);
       conditions.push(`j.is_remote = $${params.length}`);
     }
 
-    if (filters.minSalary) {
+    // Salary filters
+    if (filters.minSalary !== undefined) {
       params.push(filters.minSalary);
       conditions.push(`j.salary_min >= $${params.length}`);
     }
 
+    if (filters.maxSalary !== undefined) {
+      params.push(filters.maxSalary);
+      conditions.push(`j.salary_max <= $${params.length}`);
+    }
+
+    // Date filters
     if (filters.postedAfter) {
       params.push(filters.postedAfter);
       conditions.push(`j.posted_date >= $${params.length}`);
     }
 
+    if (filters.postedBefore) {
+      params.push(filters.postedBefore);
+      conditions.push(`j.posted_date <= $${params.length}`);
+    }
+
+    // Recent days filter (shorthand for postedAfter)
+    if (filters.recentDays !== undefined && !filters.postedAfter) {
+      params.push(`${filters.recentDays} days`);
+      conditions.push(`j.posted_date > NOW() - $${params.length}::interval`);
+    }
+
+    // Company filter (case-insensitive exact match)
+    if (filters.company) {
+      params.push(filters.company.toLowerCase());
+      conditions.push(`LOWER(j.company) = $${params.length}`);
+    }
+
+    // Source API filter - support multiple sources (OR condition)
+    if (filters.sourceApis && filters.sourceApis.length > 0) {
+      params.push(filters.sourceApis);
+      conditions.push(`j.source_apis && $${params.length}`);
+    }
+
+    // Text search filter (searches title, company, description)
+    if (filters.searchQuery) {
+      params.push(`%${filters.searchQuery.toLowerCase()}%`);
+      conditions.push(`(
+        LOWER(j.title) LIKE $${params.length} OR
+        LOWER(j.company) LIKE $${params.length} OR
+        LOWER(j.description) LIKE $${params.length}
+      )`);
+    }
+
+    // Quality score filter
+    // Uses pre-computed quality_score column (added in migration 003)
+    if (filters.minQualityScore !== undefined) {
+      params.push(filters.minQualityScore);
+      conditions.push(`j.quality_score >= ${params.length}`);
+    }
+
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     return { whereClause, params };
+  }
+
+  /**
+   * Helper to determine if we need joins for filtering
+   */
+  private needsJoinForFilters(filters: JobFilters): boolean {
+    return !!(filters.technologies?.length || filters.minQualityScore !== undefined);
+  }
+
+  /**
+   * Helper to get join clauses when needed
+   */
+  private getJoinsClause(): string {
+    return `
+      LEFT JOIN job_technologies jt ON j.id = jt.job_id
+      LEFT JOIN technologies t ON jt.technology_id = t.id
+    `;
   }
 
   private async saveTechnologies(jobId: string, technologies: string[]): Promise<void> {

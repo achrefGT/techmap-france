@@ -54,21 +54,44 @@ export interface JobSummaryDTO {
 }
 
 /**
- * Job filters for queries
+ * UPDATED: Enhanced job filters supporting all query parameters from controller
  */
 export interface JobFiltersDTO {
+  // Technology filters
   technologies?: string[];
+
+  // Location filters
   regionIds?: number[];
   isRemote?: boolean;
+
+  // Experience filters
   experienceCategories?: string[];
+
+  // Salary filters
   minSalary?: number;
   maxSalary?: number;
+
+  // Quality filter
   minQualityScore?: number;
+
+  // Source filters
   sourceApis?: string[];
+
+  // Date filters
   postedAfter?: string; // ISO date
   postedBefore?: string; // ISO date
+  recent?: number; // Jobs posted in last N days (shorthand for postedAfter)
+
+  // Status filter
   isActive?: boolean;
-  searchTerm?: string;
+  activeOnly?: boolean; // Alias for isActive=true
+
+  // Company filter
+  company?: string;
+
+  // Text search
+  searchQuery?: string;
+  searchTerm?: string; // Alias for searchQuery
 }
 
 /**
@@ -90,4 +113,24 @@ export interface PaginatedJobsDTO {
   jobs: JobDTO[];
   pagination: PaginationDTO;
   filters: JobFiltersDTO;
+}
+
+/**
+ * Job comparison result
+ */
+export interface JobComparisonDTO {
+  jobs: JobDTO[];
+  similarities: {
+    jobId1: string;
+    jobId2: string;
+    similarityScore: number;
+    commonTechnologies: string[];
+    salaryComparison: {
+      job1Midpoint: number | null;
+      job2Midpoint: number | null;
+      difference: number | null;
+    };
+    experienceMatch: boolean;
+    locationMatch: boolean;
+  }[];
 }

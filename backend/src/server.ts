@@ -1,9 +1,10 @@
-// src/server.ts
 import express, { Application } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
 import dotenv from 'dotenv';
+import swaggerUi from 'swagger-ui-express';
+import { swaggerSpec } from './config/swagger.config';
 
 // Load environment variables
 dotenv.config();
@@ -30,7 +31,11 @@ const PORT = process.env.PORT || 3000;
 // ==================== Middleware ====================
 
 // Security
-app.use(helmet());
+app.use(
+  helmet({
+    contentSecurityPolicy: process.env.NODE_ENV === 'production' ? undefined : false,
+  })
+);
 
 // CORS
 app.use(
@@ -54,9 +59,95 @@ app.use(performanceMonitor);
 // Input sanitization
 app.use(sanitizeInput);
 
+// ==================== Swagger Documentation ====================
+
+const ENABLE_DOCS = process.env.API_DOCS_ENABLED !== 'false'; // Enabled by default
+
+if (ENABLE_DOCS) {
+  // Swagger UI options
+  const swaggerUiOptions = {
+    customCss: `
+      .swagger-ui .topbar { display: none }
+      .swagger-ui .info { margin: 20px 0 }
+      .swagger-ui .scheme-container { margin: 20px 0 }
+    `,
+    customSiteTitle: 'Job Aggregator API Documentation',
+    customfavIcon: '/favicon.ico',
+    swaggerOptions: {
+      persistAuthorization: true,
+      displayRequestDuration: true,
+      filter: true,
+      showExtensions: true,
+      tryItOutEnabled: true,
+    },
+  };
+
+  // Serve Swagger UI
+  app.use('/api-docs', swaggerUi.serve);
+  app.get('/api-docs', swaggerUi.setup(swaggerSpec, swaggerUiOptions));
+
+  // Serve OpenAPI JSON
+  app.get('/api-docs.json', (_req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.send(swaggerSpec);
+  });
+
+  // Redirect /docs to /api-docs for convenience
+  app.get('/docs', (_req, res) => {
+    res.redirect('/api-docs');
+  });
+}
+
 // ==================== Routes ====================
 
-// Health check (no auth needed)
+// Root endpoint
+app.get('/', (_req, res) => {
+  res.json({
+    name: 'Job Aggregator API',
+    version: '1.0.0',
+    description: 'API for job aggregation and analytics',
+    documentation: ENABLE_DOCS ? '/api-docs' : 'Documentation disabled',
+    health: '/health',
+    endpoints: {
+      jobs: '/api/jobs',
+      technologies: '/api/technologies',
+      regions: '/api/regions',
+      analytics: '/api/analytics',
+      ingestion: '/api/ingestion',
+    },
+  });
+});
+
+/**
+ * @swagger
+ * /health:
+ *   get:
+ *     tags: [System]
+ *     summary: Health check endpoint
+ *     description: Returns the current health status of the API and its services
+ *     responses:
+ *       200:
+ *         description: API is healthy
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: healthy
+ *                 timestamp:
+ *                   type: string
+ *                   format: date-time
+ *                 uptime:
+ *                   type: number
+ *                   description: Server uptime in seconds
+ *                 services:
+ *                   type: object
+ *                   description: Status of individual services
+ *       503:
+ *         description: API is unhealthy
+ */
 app.get('/health', async (_req, res) => {
   try {
     const health = await container.healthCheck();
@@ -75,7 +166,30 @@ app.get('/health', async (_req, res) => {
   }
 });
 
-// API version info
+/**
+ * @swagger
+ * /api:
+ *   get:
+ *     tags: [System]
+ *     summary: API version and endpoints information
+ *     description: Returns available API endpoints and version information
+ *     responses:
+ *       200:
+ *         description: API information
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 name:
+ *                   type: string
+ *                 version:
+ *                   type: string
+ *                 description:
+ *                   type: string
+ *                 endpoints:
+ *                   type: object
+ */
 app.get('/api', (_req, res) => {
   res.json({
     name: 'Job Aggregator API',
@@ -111,10 +225,17 @@ app.use(errorHandler);
 const server = app.listen(PORT, () => {
   // eslint-disable-next-line no-console
   console.log(`
-🚀 Server running on port ${PORT}
-📊 Environment: ${process.env.NODE_ENV || 'development'}
-🔗 Health check: http://localhost:${PORT}/health
-📝 API docs: http://localhost:${PORT}/api
+╔═══════════════════════════════════════════════════════╗
+║                                                       ║
+║   🚀 Job Aggregator API Server                       ║
+║                                                       ║
+║   📍 Port: ${PORT}                                       ║
+║   🌍 Environment: ${process.env.NODE_ENV || 'development'}                        ║
+║   💚 Health: http://localhost:${PORT}/health             ║
+${ENABLE_DOCS ? `║   📚 Docs: http://localhost:${PORT}/api-docs            ║` : ''}
+${ENABLE_DOCS ? `║   📄 OpenAPI: http://localhost:${PORT}/api-docs.json    ║` : ''}
+║                                                       ║
+╔═══════════════════════════════════════════════════════╗
   `);
 });
 

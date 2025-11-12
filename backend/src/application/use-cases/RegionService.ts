@@ -3,7 +3,13 @@ import { IJobRepository } from '../../domain/repositories/IJobRepository';
 import { ITechnologyRepository } from '../../domain/repositories/ITechnologyRepository';
 import { RegionMapper } from '../mappers/RegionMapper';
 import { RegionDTO, RegionStatsDTO } from '../dtos/RegionDTO';
+import { Job } from '../../domain/entities/Job';
 
+/**
+ * Region Service
+ *
+ * UPDATED: Uses new repository filters instead of deprecated findByRegion method
+ */
 export class RegionService {
   constructor(
     private regionRepository: IRegionRepository,
@@ -25,8 +31,8 @@ export class RegionService {
     const region = await this.regionRepository.findById(regionId);
     if (!region) return null;
 
-    // Get jobs for this region
-    const jobs = await this.jobRepository.findByRegion(regionId);
+    // Get jobs for this region using new filter format
+    const jobs = await this.jobRepository.findAll({ regionIds: [regionId] }, 1, 10000);
 
     // Calculate top technologies
     const techCounts = new Map<string, { id: number; name: string; count: number }>();
@@ -54,29 +60,33 @@ export class RegionService {
       }));
 
     // Calculate salary stats
-    const salaries = jobs.map(j => j.getSalaryMidpoint()).filter((s): s is number => s !== null);
+    const salaries = jobs
+      .map((j: Job) => j.getSalaryMidpoint())
+      .filter((s): s is number => s !== null);
 
     const averageSalary =
-      salaries.length > 0 ? salaries.reduce((a, b) => a + b, 0) / salaries.length : null;
+      salaries.length > 0
+        ? salaries.reduce((a: number, b: number) => a + b, 0) / salaries.length
+        : null;
 
     const salaryRange =
       salaries.length > 0 ? { min: Math.min(...salaries), max: Math.max(...salaries) } : null;
 
     // Calculate remote percentage
-    const remoteJobs = jobs.filter(j => j.isRemote).length;
+    const remoteJobs = jobs.filter((j: Job) => j.isRemote).length;
     const remotePercentage = jobs.length > 0 ? (remoteJobs / jobs.length) * 100 : 0;
 
     // Experience distribution
     const experienceDistribution = {
-      junior: jobs.filter(j => j.experienceCategory === 'junior').length,
-      mid: jobs.filter(j => j.experienceCategory === 'mid').length,
-      senior: jobs.filter(j => j.experienceCategory === 'senior').length,
-      lead: jobs.filter(j => j.experienceCategory === 'lead').length,
+      junior: jobs.filter((j: Job) => j.experienceCategory === 'junior').length,
+      mid: jobs.filter((j: Job) => j.experienceCategory === 'mid').length,
+      senior: jobs.filter((j: Job) => j.experienceCategory === 'senior').length,
+      lead: jobs.filter((j: Job) => j.experienceCategory === 'lead').length,
     };
 
     // Top companies
     const companyMap = new Map<string, number>();
-    jobs.forEach(job => {
+    jobs.forEach((job: Job) => {
       companyMap.set(job.company, (companyMap.get(job.company) || 0) + 1);
     });
 

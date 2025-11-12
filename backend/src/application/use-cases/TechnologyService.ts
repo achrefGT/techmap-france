@@ -3,7 +3,13 @@ import { IJobRepository } from '../../domain/repositories/IJobRepository';
 import { IRegionRepository } from '../../domain/repositories/IRegionRepository';
 import { TechnologyMapper } from '../mappers/TechnologyMapper';
 import { TechnologyDTO, TechnologyStatsDTO } from '../dtos/TechnologyDTO';
+import { Job } from '../../domain/entities/Job';
 
+/**
+ * Technology Service
+ *
+ * UPDATED: Uses new repository filters instead of deprecated findByTechnology method
+ */
 export class TechnologyService {
   constructor(
     private technologyRepository: ITechnologyRepository,
@@ -25,14 +31,18 @@ export class TechnologyService {
     const tech = await this.technologyRepository.findById(techId);
     if (!tech) return null;
 
-    // Get all jobs with this technology
-    const jobs = await this.jobRepository.findByTechnology(techId);
+    // Get all jobs with this technology using new filter format
+    const jobs = await this.jobRepository.findAll({ technologies: [tech.name] }, 1, 10000);
 
     // Calculate average salary
-    const salaries = jobs.map(j => j.getSalaryMidpoint()).filter((s): s is number => s !== null);
+    const salaries = jobs
+      .map((j: Job) => j.getSalaryMidpoint())
+      .filter((s): s is number => s !== null);
 
     const averageSalary =
-      salaries.length > 0 ? salaries.reduce((a, b) => a + b, 0) / salaries.length : null;
+      salaries.length > 0
+        ? salaries.reduce((a: number, b: number) => a + b, 0) / salaries.length
+        : null;
 
     // Top regions for this technology
     const regionCounts = new Map<number, { name: string; count: number }>();
@@ -61,14 +71,14 @@ export class TechnologyService {
 
     // Experience distribution
     const experienceDistribution = {
-      junior: jobs.filter(j => j.experienceCategory === 'junior').length,
-      mid: jobs.filter(j => j.experienceCategory === 'mid').length,
-      senior: jobs.filter(j => j.experienceCategory === 'senior').length,
-      lead: jobs.filter(j => j.experienceCategory === 'lead').length,
+      junior: jobs.filter((j: Job) => j.experienceCategory === 'junior').length,
+      mid: jobs.filter((j: Job) => j.experienceCategory === 'mid').length,
+      senior: jobs.filter((j: Job) => j.experienceCategory === 'senior').length,
+      lead: jobs.filter((j: Job) => j.experienceCategory === 'lead').length,
     };
 
     // Remote jobs percentage
-    const remoteJobs = jobs.filter(j => j.isRemote).length;
+    const remoteJobs = jobs.filter((j: Job) => j.isRemote).length;
     const remoteJobsPercentage = jobs.length > 0 ? (remoteJobs / jobs.length) * 100 : 0;
 
     return TechnologyMapper.toStatsDTO(

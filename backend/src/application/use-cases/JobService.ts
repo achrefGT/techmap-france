@@ -1,4 +1,4 @@
-import { IJobRepository } from '../../domain/repositories/IJobRepository';
+import { IJobRepository, JobFilters } from '../../domain/repositories/IJobRepository';
 import { JobMapper } from '../mappers/JobMapper';
 import { JobDTO, JobSummaryDTO, PaginatedJobsDTO, JobFiltersDTO } from '../dtos/JobDTO';
 import { JOB_CONFIG } from '../../domain/constants/JobConfig';
@@ -12,6 +12,8 @@ import { JOB_CONFIG } from '../../domain/constants/JobConfig';
  * - Job activation/deactivation
  * - Company-specific job listings
  * - Expired job cleanup
+ *
+ * UPDATED: Enhanced filter conversion to support all new parameters
  */
 export class JobService {
   constructor(private jobRepository: IJobRepository) {}
@@ -25,8 +27,8 @@ export class JobService {
   }
 
   /**
-   * Get jobs with filtering and pagination
-   * Main endpoint for job listings
+   * UPDATED: Get jobs with comprehensive filtering and pagination
+   * Main endpoint for job listings - supports ALL filter types
    */
   async getJobs(
     filters: JobFiltersDTO = {},
@@ -38,7 +40,7 @@ export class JobService {
     const validatedPageSize = Math.min(Math.max(1, pageSize), 100); // Cap at 100
 
     // Convert DTO filters to repository filters
-    const repoFilters = await this.convertFiltersToRepoFormat(filters);
+    const repoFilters = this.convertFiltersToRepoFormat(filters);
 
     // Get total count for pagination
     const totalItems = await this.jobRepository.count(repoFilters);
@@ -53,7 +55,7 @@ export class JobService {
    * Get recent jobs (posted within N days)
    */
   async getRecentJobs(days: number = JOB_CONFIG.RECENT_DAYS_THRESHOLD): Promise<JobDTO[]> {
-    const jobs = await this.jobRepository.findRecent(days);
+    const jobs = await this.jobRepository.findAll({ recentDays: days }, 1, 10000);
     return JobMapper.toDTOs(jobs);
   }
 
@@ -66,7 +68,7 @@ export class JobService {
     page: number = 1,
     pageSize: number = 20
   ): Promise<{ jobs: JobSummaryDTO[]; totalItems: number }> {
-    const repoFilters = await this.convertFiltersToRepoFormat(filters);
+    const repoFilters = this.convertFiltersToRepoFormat(filters);
     const totalItems = await this.jobRepository.count(repoFilters);
     const jobs = await this.jobRepository.findAll(repoFilters, page, pageSize);
 
@@ -80,32 +82,32 @@ export class JobService {
    * Get all jobs from a specific company
    */
   async getJobsByCompany(company: string, activeOnly: boolean = true): Promise<JobDTO[]> {
-    const filters = activeOnly ? { isActive: true } : {};
-    const jobs = await this.jobRepository.findAll(filters, 1, 1000);
+    const repoFilters: JobFilters = {
+      company,
+      isActive: activeOnly,
+    };
 
-    // Filter by company name (case-insensitive)
-    const companyJobs = jobs.filter(job => job.company.toLowerCase() === company.toLowerCase());
-
-    return JobMapper.toDTOs(companyJobs);
+    const jobs = await this.jobRepository.findAll(repoFilters, 1, 1000);
+    return JobMapper.toDTOs(jobs);
   }
 
   /**
    * Get jobs by technology
    */
   async getJobsByTechnology(
-    technologyId: number,
+    technologyName: string,
     page: number = 1,
     pageSize: number = 20
   ): Promise<PaginatedJobsDTO> {
-    const jobs = await this.jobRepository.findByTechnology(technologyId);
-    const totalItems = jobs.length;
+    const repoFilters: JobFilters = {
+      technologies: [technologyName],
+    };
 
-    // Manual pagination since repository returns all
-    const start = (page - 1) * pageSize;
-    const paginatedJobs = jobs.slice(start, start + pageSize);
+    const totalItems = await this.jobRepository.count(repoFilters);
+    const jobs = await this.jobRepository.findAll(repoFilters, page, pageSize);
 
-    return JobMapper.toPaginatedDTO(paginatedJobs, totalItems, page, pageSize, {
-      technologies: [technologyId.toString()],
+    return JobMapper.toPaginatedDTO(jobs, totalItems, page, pageSize, {
+      technologies: [technologyName],
     });
   }
 
@@ -117,14 +119,14 @@ export class JobService {
     page: number = 1,
     pageSize: number = 20
   ): Promise<PaginatedJobsDTO> {
-    const jobs = await this.jobRepository.findByRegion(regionId);
-    const totalItems = jobs.length;
+    const repoFilters: JobFilters = {
+      regionIds: [regionId],
+    };
 
-    // Manual pagination
-    const start = (page - 1) * pageSize;
-    const paginatedJobs = jobs.slice(start, start + pageSize);
+    const totalItems = await this.jobRepository.count(repoFilters);
+    const jobs = await this.jobRepository.findAll(repoFilters, page, pageSize);
 
-    return JobMapper.toPaginatedDTO(paginatedJobs, totalItems, page, pageSize, {
+    return JobMapper.toPaginatedDTO(jobs, totalItems, page, pageSize, {
       regionIds: [regionId],
     });
   }
@@ -223,7 +225,7 @@ export class JobService {
   }
 
   /**
-   * Get jobs from multiple sources
+   * Get jobs from specific source(s)
    */
   async getJobsBySource(
     sourceApi: string,
@@ -274,37 +276,30 @@ export class JobService {
    * Get count of jobs by various filters
    */
   async getJobCount(filters: JobFiltersDTO = {}): Promise<number> {
-    const repoFilters = await this.convertFiltersToRepoFormat(filters);
+    const repoFilters = this.convertFiltersToRepoFormat(filters);
     return await this.jobRepository.count(repoFilters);
   }
 
   /**
-   * Convert JobFiltersDTO to repository filters format
-   * Handles technology name to ID conversion
+   * UPDATED: Convert JobFiltersDTO to repository filters format
+   * Handles all new filter types and aliases
    */
-  private async convertFiltersToRepoFormat(filters: JobFiltersDTO): Promise<{
-    regionId?: number;
-    technologies?: string[];
-    experienceLevel?: string;
-    isRemote?: boolean;
-    minSalary?: number;
-    postedAfter?: Date;
-  }> {
-    const repoFilters: any = {};
+  private convertFiltersToRepoFormat(filters: JobFiltersDTO): JobFilters {
+    const repoFilters: JobFilters = {};
 
-    // Region filter (use first region if multiple)
+    // Region filters (multiple regions supported)
     if (filters.regionIds && filters.regionIds.length > 0) {
-      repoFilters.regionId = filters.regionIds[0];
+      repoFilters.regionIds = filters.regionIds;
     }
 
-    // Technology filter (keep as names - repository handles them)
+    // Technology filters (multiple technologies with AND condition)
     if (filters.technologies && filters.technologies.length > 0) {
       repoFilters.technologies = filters.technologies;
     }
 
-    // Experience filter (use first if multiple)
+    // Experience filters (multiple categories with OR condition)
     if (filters.experienceCategories && filters.experienceCategories.length > 0) {
-      repoFilters.experienceLevel = filters.experienceCategories[0];
+      repoFilters.experienceCategories = filters.experienceCategories;
     }
 
     // Remote filter
@@ -312,14 +307,54 @@ export class JobService {
       repoFilters.isRemote = filters.isRemote;
     }
 
-    // Salary filter
+    // Salary filters
     if (filters.minSalary !== undefined) {
       repoFilters.minSalary = filters.minSalary;
     }
+    if (filters.maxSalary !== undefined) {
+      repoFilters.maxSalary = filters.maxSalary;
+    }
 
-    // Date filter
+    // Quality filter
+    if (filters.minQualityScore !== undefined) {
+      repoFilters.minQualityScore = filters.minQualityScore;
+    }
+
+    // Source API filters
+    if (filters.sourceApis && filters.sourceApis.length > 0) {
+      repoFilters.sourceApis = filters.sourceApis;
+    }
+
+    // Date filters
     if (filters.postedAfter) {
       repoFilters.postedAfter = new Date(filters.postedAfter);
+    }
+    if (filters.postedBefore) {
+      repoFilters.postedBefore = new Date(filters.postedBefore);
+    }
+
+    // Recent days filter (shorthand for postedAfter)
+    if (filters.recent !== undefined) {
+      repoFilters.recentDays = filters.recent;
+    }
+
+    // Active filter (handle both isActive and activeOnly)
+    if (filters.isActive !== undefined) {
+      repoFilters.isActive = filters.isActive;
+    } else if (filters.activeOnly !== undefined) {
+      repoFilters.isActive = filters.activeOnly;
+    }
+
+    // Company filter
+    if (filters.company) {
+      repoFilters.company = filters.company;
+    }
+
+    // Text search (handle both searchQuery and searchTerm aliases)
+    if (filters.searchQuery) {
+      repoFilters.searchQuery = filters.searchQuery;
+    } else if (filters.searchTerm) {
+      repoFilters.searchQuery = filters.searchTerm;
     }
 
     return repoFilters;

@@ -1,7 +1,13 @@
-import { IJobRepository } from '../../domain/repositories/IJobRepository';
+import { IJobRepository, JobFilters } from '../../domain/repositories/IJobRepository';
 import { JobDeduplicationService } from '../../domain/services/JobDeduplicationService';
 import { JobMapper } from '../mappers/JobMapper';
-import { JobDTO, JobSummaryDTO, PaginatedJobsDTO, JobFiltersDTO } from '../dtos/JobDTO';
+import {
+  JobDTO,
+  JobSummaryDTO,
+  PaginatedJobsDTO,
+  JobFiltersDTO,
+  JobComparisonDTO,
+} from '../dtos/JobDTO';
 import { Job } from '../../domain/entities/Job';
 
 /**
@@ -59,6 +65,8 @@ export interface SearchResult {
  * - Technology stack matching
  * - Personalized job recommendations
  * - Smart filtering with ranking
+ *
+ * UPDATED: Enhanced to work with updated repository filters
  */
 export class JobSearchService {
   private deduplicationService: JobDeduplicationService;
@@ -76,33 +84,19 @@ export class JobSearchService {
     page: number = 1,
     pageSize: number = 20
   ): Promise<PaginatedJobsDTO> {
-    // Get all jobs that match basic filters
-    const jobs = await this.jobRepository.findAll(
-      this.convertFiltersToRepoFormat(filters),
-      1,
-      10000 // Get large set for text filtering
-    );
+    // Build repository filters with text search
+    const repoFilters = this.convertFiltersToRepoFormat(filters);
+    repoFilters.searchQuery = query;
 
-    // Filter by text search
-    const normalizedQuery = this.normalizeSearchQuery(query);
-    const matchedJobs = jobs.filter(job => this.matchesSearchQuery(job, normalizedQuery));
+    // Get total count
+    const totalItems = await this.jobRepository.count(repoFilters);
 
-    // Sort by relevance (title match > company match > description match)
-    const scoredJobs = matchedJobs.map(job => ({
-      job,
-      score: this.calculateTextSearchScore(job, normalizedQuery),
-    }));
+    // Get jobs
+    const jobs = await this.jobRepository.findAll(repoFilters, page, pageSize);
 
-    scoredJobs.sort((a, b) => b.score - a.score);
-
-    // Paginate
-    const totalItems = scoredJobs.length;
-    const start = (page - 1) * pageSize;
-    const paginatedJobs = scoredJobs.slice(start, start + pageSize).map(item => item.job);
-
-    return JobMapper.toPaginatedDTO(paginatedJobs, totalItems, page, pageSize, {
+    return JobMapper.toPaginatedDTO(jobs, totalItems, page, pageSize, {
       ...filters,
-      searchTerm: query,
+      searchQuery: query,
     });
   }
 
@@ -132,10 +126,8 @@ export class JobSearchService {
       filteredJobs = filteredJobs.filter(job => !excludedSet.has(job.company.toLowerCase()));
     }
 
-    // Required technologies (must have ALL)
-    if (criteria.requiredTechnologies && criteria.requiredTechnologies.length > 0) {
-      filteredJobs = filteredJobs.filter(job => job.matchesStack(criteria.requiredTechnologies!));
-    }
+    // Required technologies (must have ALL) - Note: repository already handles this
+    // No additional filtering needed if it was in baseFilters
 
     // Score and rank remaining jobs
     const searchResults = filteredJobs.map(job => this.scoreJobAgainstCriteria(job, criteria));
@@ -206,24 +198,13 @@ export class JobSearchService {
     page: number = 1,
     pageSize: number = 20
   ): Promise<PaginatedJobsDTO> {
-    const jobs = await this.jobRepository.findAll(
-      this.convertFiltersToRepoFormat(additionalFilters),
-      1,
-      10000
-    );
+    const repoFilters = this.convertFiltersToRepoFormat(additionalFilters);
+    repoFilters.technologies = techStack;
 
-    // Filter jobs that match the entire stack
-    const matchingJobs = jobs.filter(job => job.matchesStack(techStack));
+    const totalItems = await this.jobRepository.count(repoFilters);
+    const jobs = await this.jobRepository.findAll(repoFilters, page, pageSize);
 
-    // Sort by quality score
-    matchingJobs.sort((a, b) => b.calculateQualityScore() - a.calculateQualityScore());
-
-    // Paginate
-    const totalItems = matchingJobs.length;
-    const start = (page - 1) * pageSize;
-    const paginatedJobs = matchingJobs.slice(start, start + pageSize);
-
-    return JobMapper.toPaginatedDTO(paginatedJobs, totalItems, page, pageSize, {
+    return JobMapper.toPaginatedDTO(jobs, totalItems, page, pageSize, {
       ...additionalFilters,
       technologies: techStack,
     });
@@ -231,6 +212,7 @@ export class JobSearchService {
 
   /**
    * Search jobs by any of the given technologies (OR condition)
+   * Note: Repository uses AND condition, so we need to fetch and filter
    */
   async searchByAnyTechnology(
     technologies: string[],
@@ -260,7 +242,9 @@ export class JobSearchService {
     const start = (page - 1) * pageSize;
     const paginatedJobs = matchingJobs.slice(start, start + pageSize);
 
-    return JobMapper.toPaginatedDTO(paginatedJobs, totalItems, page, pageSize, { technologies });
+    return JobMapper.toPaginatedDTO(paginatedJobs, totalItems, page, pageSize, {
+      technologies,
+    });
   }
 
   /**
@@ -361,8 +345,64 @@ export class JobSearchService {
   }
 
   /**
+   * UPDATED: Compare multiple jobs
+   * Useful for user-facing "compare jobs" feature
+   */
+  async compareMultipleJobs(jobIds: string[]): Promise<JobComparisonDTO> {
+    const jobs = await Promise.all(jobIds.map(id => this.jobRepository.findById(id)));
+
+    // Filter out null jobs
+    const validJobs = jobs.filter((job): job is Job => job !== null);
+
+    if (validJobs.length < 2) {
+      throw new Error('At least 2 valid jobs required for comparison');
+    }
+
+    // Calculate pairwise similarities
+    const similarities: JobComparisonDTO['similarities'] = [];
+
+    for (let i = 0; i < validJobs.length; i++) {
+      for (let j = i + 1; j < validJobs.length; j++) {
+        const job1 = validJobs[i];
+        const job2 = validJobs[j];
+
+        const analysis = this.deduplicationService.analyzeSimilarity(job1, job2);
+
+        const job1Midpoint = job1.getSalaryMidpoint();
+        const job2Midpoint = job2.getSalaryMidpoint();
+        const salaryDifference =
+          job1Midpoint && job2Midpoint ? Math.abs(job1Midpoint - job2Midpoint) : null;
+
+        // Calculate common technologies (normalized comparison)
+        const normalize = (str: string) => str.toLowerCase().trim();
+        const tech2Set = new Set(job2.technologies.map(normalize));
+        const commonTechs = job1.technologies.filter(tech => tech2Set.has(normalize(tech)));
+
+        similarities.push({
+          jobId1: job1.id,
+          jobId2: job2.id,
+          similarityScore: analysis.overallSimilarity,
+          commonTechnologies: commonTechs,
+          salaryComparison: {
+            job1Midpoint,
+            job2Midpoint,
+            difference: salaryDifference,
+          },
+          experienceMatch: job1.experienceCategory === job2.experienceCategory,
+          locationMatch: job1.regionId === job2.regionId || (job1.isRemote && job2.isRemote),
+        });
+      }
+    }
+
+    return {
+      jobs: JobMapper.toDTOs(validJobs),
+      similarities,
+    };
+  }
+
+  /**
    * Analyze similarity between two jobs
-   * Useful for debugging or user-facing "compare jobs" feature
+   * Useful for debugging or detailed comparison
    */
   async compareJobs(
     jobId1: string,
@@ -391,88 +431,47 @@ export class JobSearchService {
   // ==================== Private Helper Methods ====================
 
   /**
-   * Normalize search query for matching
-   */
-  private normalizeSearchQuery(query: string): string {
-    return query
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .trim();
-  }
-
-  /**
-   * Check if job matches search query
-   */
-  private matchesSearchQuery(job: Job, normalizedQuery: string): boolean {
-    const searchableText = [
-      job.title,
-      job.company,
-      job.description,
-      ...job.technologies,
-      job.location,
-    ]
-      .join(' ')
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '');
-
-    return searchableText.includes(normalizedQuery);
-  }
-
-  /**
-   * Calculate text search relevance score
-   */
-  private calculateTextSearchScore(job: Job, normalizedQuery: string): number {
-    let score = 0;
-
-    const normalizedTitle = this.normalizeSearchQuery(job.title);
-    const normalizedCompany = this.normalizeSearchQuery(job.company);
-    const normalizedDescription = this.normalizeSearchQuery(job.description);
-
-    // Title match (highest weight)
-    if (normalizedTitle.includes(normalizedQuery)) score += 100;
-
-    // Company match (medium weight)
-    if (normalizedCompany.includes(normalizedQuery)) score += 50;
-
-    // Technology match (medium weight)
-    if (job.technologies.some(tech => this.normalizeSearchQuery(tech).includes(normalizedQuery))) {
-      score += 50;
-    }
-
-    // Description match (low weight)
-    if (normalizedDescription.includes(normalizedQuery)) score += 20;
-
-    // Boost quality jobs
-    score += job.calculateQualityScore() * 0.1;
-
-    // Boost recent jobs
-    if (job.isRecent()) score += 10;
-
-    return score;
-  }
-
-  /**
    * Build base repository filters from advanced criteria
    */
-  private buildBaseFilters(criteria: AdvancedSearchCriteria): any {
-    const filters: any = {};
+  private buildBaseFilters(criteria: AdvancedSearchCriteria): JobFilters {
+    const filters: JobFilters = {};
 
-    if (criteria.experienceCategories && criteria.experienceCategories.length > 0) {
-      filters.experienceLevel = criteria.experienceCategories[0];
+    // Required technologies (AND condition) - repository handles this
+    if (criteria.requiredTechnologies && criteria.requiredTechnologies.length > 0) {
+      filters.technologies = criteria.requiredTechnologies;
     }
 
+    // Experience categories
+    if (criteria.experienceCategories && criteria.experienceCategories.length > 0) {
+      filters.experienceCategories = criteria.experienceCategories;
+    }
+
+    // Remote filter
     if (criteria.remoteOnly) {
       filters.isRemote = true;
     }
 
+    // Salary filters
     if (criteria.minSalary) {
       filters.minSalary = criteria.minSalary;
     }
+    if (criteria.maxSalary) {
+      filters.maxSalary = criteria.maxSalary;
+    }
 
+    // Preferred regions
     if (criteria.preferredRegions && criteria.preferredRegions.length > 0) {
-      filters.regionId = criteria.preferredRegions[0];
+      filters.regionIds = criteria.preferredRegions;
+    }
+
+    // Quality threshold
+    if (criteria.minQualityScore) {
+      filters.minQualityScore = criteria.minQualityScore;
+    }
+
+    // Recent preference
+    if (criteria.preferRecent) {
+      filters.recentDays = 30; // Last 30 days
     }
 
     return filters;
@@ -648,13 +647,13 @@ export class JobSearchService {
   }
 
   /**
-   * Convert JobFiltersDTO to repository format
+   * Convert JobFiltersDTO to repository filters format
    */
-  private convertFiltersToRepoFormat(filters: JobFiltersDTO): any {
-    const repoFilters: any = {};
+  private convertFiltersToRepoFormat(filters: JobFiltersDTO): JobFilters {
+    const repoFilters: JobFilters = {};
 
     if (filters.regionIds && filters.regionIds.length > 0) {
-      repoFilters.regionId = filters.regionIds[0];
+      repoFilters.regionIds = filters.regionIds;
     }
 
     if (filters.technologies && filters.technologies.length > 0) {
@@ -662,7 +661,7 @@ export class JobSearchService {
     }
 
     if (filters.experienceCategories && filters.experienceCategories.length > 0) {
-      repoFilters.experienceLevel = filters.experienceCategories[0];
+      repoFilters.experienceCategories = filters.experienceCategories;
     }
 
     if (filters.isRemote !== undefined) {
@@ -673,8 +672,44 @@ export class JobSearchService {
       repoFilters.minSalary = filters.minSalary;
     }
 
+    if (filters.maxSalary !== undefined) {
+      repoFilters.maxSalary = filters.maxSalary;
+    }
+
+    if (filters.minQualityScore !== undefined) {
+      repoFilters.minQualityScore = filters.minQualityScore;
+    }
+
+    if (filters.sourceApis && filters.sourceApis.length > 0) {
+      repoFilters.sourceApis = filters.sourceApis;
+    }
+
     if (filters.postedAfter) {
       repoFilters.postedAfter = new Date(filters.postedAfter);
+    }
+
+    if (filters.postedBefore) {
+      repoFilters.postedBefore = new Date(filters.postedBefore);
+    }
+
+    if (filters.recent !== undefined) {
+      repoFilters.recentDays = filters.recent;
+    }
+
+    if (filters.isActive !== undefined) {
+      repoFilters.isActive = filters.isActive;
+    } else if (filters.activeOnly !== undefined) {
+      repoFilters.isActive = filters.activeOnly;
+    }
+
+    if (filters.company) {
+      repoFilters.company = filters.company;
+    }
+
+    if (filters.searchQuery) {
+      repoFilters.searchQuery = filters.searchQuery;
+    } else if (filters.searchTerm) {
+      repoFilters.searchQuery = filters.searchTerm;
     }
 
     return repoFilters;
