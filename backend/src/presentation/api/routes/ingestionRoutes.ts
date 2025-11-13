@@ -58,43 +58,116 @@ import { IngestionController } from '../controllers/IngestionController';
  *                   type: array
  *                   items:
  *                     type: string
- *           example:
- *             - id: "job-123"
- *               title: "Senior React Developer"
- *               company: "Tech Corp"
- *               description: "Looking for an experienced React developer..."
- *               sourceApi: "indeed"
- *               externalId: "ext-456"
- *               location: "San Francisco, CA"
- *               isRemote: false
- *               salaryMin: 120000
- *               salaryMax: 160000
- *               technologies: ["React", "TypeScript", "Node.js"]
  *     responses:
  *       200:
  *         description: Jobs ingested successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     total:
- *                       type: integer
- *                     created:
- *                       type: integer
- *                     updated:
- *                       type: integer
- *                     skipped:
- *                       type: integer
- *                     failed:
- *                       type: integer
  *       400:
  *         description: Invalid request body
+ */
+
+/**
+ * @swagger
+ * /api/ingestion/orchestrate:
+ *   post:
+ *     tags: [Ingestion]
+ *     summary: Orchestrate multi-source ingestion
+ *     description: |
+ *       Fetch and ingest jobs from multiple configured sources (France Travail, Adzuna, Remotive).
+ *       Supports deduplication across sources.
+ *
+ *       **Security Note:** This endpoint should be protected with authentication in production.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               franceTravail:
+ *                 type: object
+ *                 properties:
+ *                   enabled:
+ *                     type: boolean
+ *                   maxResults:
+ *                     type: integer
+ *                   searchParams:
+ *                     type: object
+ *                     properties:
+ *                       motsCles:
+ *                         type: string
+ *                       commune:
+ *                         type: string
+ *                       departement:
+ *                         type: string
+ *               adzuna:
+ *                 type: object
+ *                 properties:
+ *                   enabled:
+ *                     type: boolean
+ *                   maxResults:
+ *                     type: integer
+ *                   keywords:
+ *                     type: string
+ *               remotive:
+ *                 type: object
+ *                 properties:
+ *                   enabled:
+ *                     type: boolean
+ *                   limit:
+ *                     type: integer
+ *               batchSize:
+ *                 type: integer
+ *               enableDeduplication:
+ *                 type: boolean
+ *           example:
+ *             franceTravail:
+ *               enabled: true
+ *               maxResults: 150
+ *               searchParams:
+ *                 motsCles: "développeur"
+ *             adzuna:
+ *               enabled: true
+ *               maxResults: 150
+ *             remotive:
+ *               enabled: false
+ *             batchSize: 100
+ *             enableDeduplication: true
+ *     responses:
+ *       200:
+ *         description: Orchestrated ingestion completed
+ *       400:
+ *         description: Invalid configuration
+ */
+
+/**
+ * @swagger
+ * /api/ingestion/source/{sourceName}:
+ *   post:
+ *     tags: [Ingestion]
+ *     summary: Ingest from a specific source
+ *     description: |
+ *       Fetch and ingest jobs from a single source.
+ *
+ *       **Security Note:** This endpoint should be protected with authentication in production.
+ *     parameters:
+ *       - in: path
+ *         name: sourceName
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum: [france_travail, adzuna, remotive]
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             description: Source-specific configuration
+ *     responses:
+ *       200:
+ *         description: Source ingestion completed
+ *       400:
+ *         description: Invalid source name
  */
 
 /**
@@ -127,38 +200,9 @@ import { IngestionController } from '../controllers/IngestionController';
  *                 default: 50
  *                 minimum: 1
  *                 maximum: 1000
- *           example:
- *             jobs:
- *               - id: "job-123"
- *                 title: "Senior Developer"
- *                 company: "Tech Corp"
- *                 description: "Job description..."
- *                 sourceApi: "indeed"
- *                 externalId: "ext-456"
- *             batchSize: 100
  *     responses:
  *       200:
  *         description: Batch ingestion completed
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     totalJobs:
- *                       type: integer
- *                     batchesProcessed:
- *                       type: integer
- *                     created:
- *                       type: integer
- *                     updated:
- *                       type: integer
- *                     failed:
- *                       type: integer
  *       400:
  *         description: Invalid request body
  */
@@ -181,31 +225,6 @@ import { IngestionController } from '../controllers/IngestionController';
  *     responses:
  *       200:
  *         description: Validation results
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     total:
- *                       type: integer
- *                     valid:
- *                       type: integer
- *                     invalid:
- *                       type: integer
- *                     errors:
- *                       type: array
- *                       items:
- *                         type: object
- *                         properties:
- *                           index:
- *                             type: integer
- *                           error:
- *                             type: string
  *       400:
  *         description: Invalid request body
  */
@@ -223,15 +242,6 @@ import { IngestionController } from '../controllers/IngestionController';
  *     responses:
  *       200:
  *         description: Technologies cache reloaded successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 message:
- *                   type: string
  */
 
 /**
@@ -247,15 +257,6 @@ import { IngestionController } from '../controllers/IngestionController';
  *     responses:
  *       200:
  *         description: Technologies cache cleared successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 message:
- *                   type: string
  */
 
 /**
@@ -268,22 +269,14 @@ import { IngestionController } from '../controllers/IngestionController';
  *     responses:
  *       200:
  *         description: Ingestion statistics
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     message:
- *                       type: string
  */
 
 export function createIngestionRoutes(controller: IngestionController): Router {
   const router = Router();
+
+  // Orchestrated ingestion - NEW
+  router.post('/orchestrate', controller.orchestrateIngestion);
+  router.post('/source/:sourceName', controller.ingestFromSource);
 
   // Job ingestion
   router.post('/jobs', controller.ingestJobs);

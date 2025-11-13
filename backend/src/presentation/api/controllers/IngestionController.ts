@@ -3,6 +3,7 @@ import {
   JobIngestionService,
   RawJobData,
 } from '../../../application/use-cases/JobIngestionService';
+import { IngestionOrchestrator } from '../../../application/use-cases/IngestionOrchestrator'; // NEW
 import { ILogger } from '../../../application/use-cases/JobIngestionService';
 
 /**
@@ -11,6 +12,7 @@ import { ILogger } from '../../../application/use-cases/JobIngestionService';
  * Responsibilities:
  * - Handle job ingestion requests
  * - Trigger batch imports
+ * - Orchestrate multi-source ingestion
  * - Provide ingestion status
  *
  * Security Note: These endpoints should be protected with authentication
@@ -19,7 +21,8 @@ import { ILogger } from '../../../application/use-cases/JobIngestionService';
 export class IngestionController {
   constructor(
     private ingestionService: JobIngestionService,
-    private logger: ILogger
+    private logger: ILogger,
+    private orchestrator?: IngestionOrchestrator // NEW - optional for backwards compatibility
   ) {}
 
   /**
@@ -107,6 +110,88 @@ export class IngestionController {
       });
     } catch (error) {
       this.logger.error('Batch ingestion failed', { error });
+      next(error);
+    }
+  };
+
+  /**
+   * POST /api/ingestion/orchestrate
+   * Orchestrate ingestion from multiple sources
+   *
+   * Body: IngestionConfig (which sources to enable, params, etc.)
+   *
+   * NEW ENDPOINT
+   */
+  orchestrateIngestion = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!this.orchestrator) {
+        res.status(501).json({
+          error: 'Orchestrator not configured',
+          message: 'Ingestion orchestrator is not available',
+        });
+        return;
+      }
+
+      const config = req.body;
+
+      this.logger.info('Orchestrated ingestion request received', { config });
+
+      const result = await this.orchestrator.ingestFromAllSources(config);
+
+      res.status(200).json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      this.logger.error('Orchestrated ingestion failed', { error });
+      next(error);
+    }
+  };
+
+  /**
+   * POST /api/ingestion/source/:sourceName
+   * Ingest from a specific source (france_travail, adzuna, or remotive)
+   *
+   * NEW ENDPOINT
+   */
+  ingestFromSource = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!this.orchestrator) {
+        res.status(501).json({
+          error: 'Orchestrator not configured',
+          message: 'Ingestion orchestrator is not available',
+        });
+        return;
+      }
+
+      const { sourceName } = req.params;
+      const sourceConfig = req.body;
+
+      const validSources = ['france_travail', 'adzuna', 'remotive'];
+      if (!validSources.includes(sourceName)) {
+        res.status(400).json({
+          error: 'Invalid source',
+          message: `Source must be one of: ${validSources.join(', ')}`,
+        });
+        return;
+      }
+
+      this.logger.info('Single source ingestion request received', {
+        source: sourceName,
+        config: sourceConfig,
+      });
+
+      const result = await this.orchestrator.ingestFromSource(
+        sourceName as 'france_travail' | 'adzuna' | 'remotive',
+        sourceConfig
+      );
+
+      res.status(200).json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      this.logger.error('Single source ingestion failed', { error });
       next(error);
     }
   };
