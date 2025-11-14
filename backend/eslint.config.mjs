@@ -8,7 +8,7 @@ export default [
     ignores: ['dist/**', 'node_modules/**', 'coverage/**', '*.config.js', '*.config.mjs'],
   },
   {
-    files: ['src/**/*.ts'],
+    files: ['src/**/*.ts', 'tests/**/*.ts', 'scripts/**/*.ts'],
     languageOptions: {
       parser: tsparser,
       parserOptions: {
@@ -44,7 +44,7 @@ export default [
     },
   },
   {
-    files: ['src/**/*.test.ts', 'src/**/*.spec.ts'],
+    files: ['src/**/*.test.ts', 'src/**/*.spec.ts', 'tests/**/*.test.ts', 'tests/**/*.spec.ts'],
     languageOptions: {
       parser: tsparser,
       parserOptions: {
@@ -74,7 +74,7 @@ export default [
       '@typescript-eslint/explicit-function-return-type': 'off',
       '@typescript-eslint/explicit-module-boundary-types': 'off',
       '@typescript-eslint/no-explicit-any': 'warn',
-      '@typescript-eslint/no-require-imports': 'error',
+      '@typescript-eslint/no-require-imports': 'off', // Allow require in tests for mocking
       'no-console': ['warn', { allow: ['warn', 'error'] }],
       'prefer-const': 'error',
       'no-var': 'error',
