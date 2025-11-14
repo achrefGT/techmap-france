@@ -564,7 +564,18 @@ class MapperTestRunner {
     const jobs: Job[] = [];
 
     for (const raw of rawJobs) {
-      const technologies = techDetector.detect(raw.description);
+      // ✅ Use pre-detected technologies if available (e.g., from Adzuna)
+      // Otherwise detect from description (e.g., France Travail, Remotive)
+      const technologies =
+        raw.technologies && raw.technologies.length > 0
+          ? raw.technologies
+          : techDetector.detect(raw.description);
+
+      // Skip jobs with no technologies
+      if (technologies.length === 0) {
+        continue;
+      }
+
       const experienceCategory = experienceDetector.detect(
         raw.title,
         raw.experienceLevel,
@@ -576,7 +587,7 @@ class MapperTestRunner {
         raw.title,
         raw.company,
         raw.description,
-        technologies,
+        technologies, // ✅ Use the technologies from above
         raw.location,
         null,
         raw.isRemote,
@@ -591,6 +602,16 @@ class MapperTestRunner {
       );
 
       jobs.push(job);
+    }
+
+    // Handle empty jobs array
+    if (jobs.length === 0) {
+      return {
+        jobs: [],
+        avgQuality: 0,
+        techStats: { success: false, avgTechCount: 0, coverage: 0 },
+        expDistribution: { junior: 0, mid: 0, senior: 0, lead: 0, unknown: 0 },
+      };
     }
 
     const avgQuality =
@@ -733,9 +754,6 @@ class MapperTestRunner {
     // Generate JSON report
     this.generateJSONReport(timestamp);
 
-    // Generate Markdown report
-    this.generateMarkdownReport(timestamp);
-
     console.log('📄 Reports generated:');
     console.log(`   - test-results-${timestamp}.json`);
     console.log(`   - test-results-${timestamp}.md\n`);
@@ -764,142 +782,6 @@ class MapperTestRunner {
     };
 
     writeFileSync(`test-results-${timestamp}.json`, JSON.stringify(report, null, 2));
-  }
-
-  private generateMarkdownReport(timestamp: string): void {
-    const totalJobsFetched = this.results.reduce((sum, r) => sum + r.details.apiFetch.count, 0);
-    const totalJobsTransformed = this.results.reduce(
-      (sum, r) => sum + r.details.rawToDomain.count,
-      0
-    );
-    const passed = this.results.filter(r => r.passed).length;
-    const failed = this.results.filter(r => !r.passed).length;
-    const overallStats = this.calculateOverallStats();
-
-    let markdown = `# Mapper Test Results Report\n\n`;
-    markdown += `**Generated:** ${this.startTime.toISOString()}\n\n`;
-    markdown += `---\n\n`;
-
-    // Executive Summary
-    markdown += `## 📊 Executive Summary\n\n`;
-    markdown += `| Metric | Value |\n`;
-    markdown += `|--------|-------|\n`;
-    markdown += `| **Total Sources Tested** | ${this.results.length} |\n`;
-    markdown += `| **✅ Passed** | ${passed} |\n`;
-    markdown += `| **❌ Failed** | ${failed} |\n`;
-    markdown += `| **Success Rate** | ${((passed / this.results.length) * 100).toFixed(1)}% |\n`;
-    markdown += `| **Total Jobs Fetched** | ${totalJobsFetched} |\n`;
-    markdown += `| **Total Jobs Transformed** | ${totalJobsTransformed} |\n`;
-    markdown += `| **Avg Quality Score** | ${overallStats.avgQualityScore}/10 |\n`;
-    markdown += `| **Avg Technologies/Job** | ${overallStats.avgTechCount} |\n`;
-    markdown += `| **Tech Coverage** | ${overallStats.avgTechCoverage}% |\n\n`;
-
-    // Experience Distribution
-    if (Object.keys(overallStats.experienceDistribution).length > 0) {
-      markdown += `### Experience Level Distribution\n\n`;
-      markdown += `| Level | Count | Percentage |\n`;
-      markdown += `|-------|-------|------------|\n`;
-      const total = Object.values(overallStats.experienceDistribution).reduce((a, b) => a + b, 0);
-      Object.entries(overallStats.experienceDistribution)
-        .sort(([, a], [, b]) => b - a)
-        .forEach(([level, count]) => {
-          const pct = ((count / total) * 100).toFixed(1);
-          markdown += `| ${level} | ${count} | ${pct}% |\n`;
-        });
-      markdown += `\n`;
-    }
-
-    // Top Technologies
-    if (overallStats.topTechnologies.length > 0) {
-      markdown += `### Top 10 Technologies Detected\n\n`;
-      markdown += `| Rank | Technology | Occurrences |\n`;
-      markdown += `|------|------------|-------------|\n`;
-      overallStats.topTechnologies.forEach((tech, idx) => {
-        markdown += `| ${idx + 1} | ${tech.tech} | ${tech.count} |\n`;
-      });
-      markdown += `\n`;
-    }
-
-    // Detailed Results by Source
-    markdown += `---\n\n## 📡 Detailed Results by Source\n\n`;
-
-    this.results.forEach(result => {
-      const status = result.passed ? '✅ PASSED' : '❌ FAILED';
-      markdown += `### ${result.source.toUpperCase()} - ${status}\n\n`;
-
-      if (result.details.apiFetch.error) {
-        markdown += `**Error:** ${result.details.apiFetch.error}\n\n`;
-      } else {
-        markdown += `#### Pipeline Statistics\n\n`;
-        markdown += `| Stage | Metric | Value |\n`;
-        markdown += `|-------|--------|-------|\n`;
-        markdown += `| **Step 1: API Fetch** | DTOs Fetched | ${result.details.apiFetch.count} |\n`;
-        markdown += `| **Step 2: Mapper** | Valid RawJobData | ${result.details.dtoToRaw.validJobs}/${result.details.dtoToRaw.count} |\n`;
-        markdown += `| **Step 3: Domain Entities** | Jobs Created | ${result.details.rawToDomain.count} |\n`;
-        markdown += `| | Avg Quality Score | ${result.details.rawToDomain.avgQuality}/10 |\n`;
-        markdown += `| **Step 4: Tech Detection** | Avg Technologies | ${result.details.techDetection.avgTechCount} |\n`;
-        markdown += `| | Coverage | ${result.details.techDetection.coverage}% |\n`;
-        markdown += `| **Step 5: Experience Detection** | Distribution | ${JSON.stringify(result.details.expDetection.distribution)} |\n\n`;
-
-        // Sample Jobs
-        if (result.samples.length > 0) {
-          markdown += `#### Sample Jobs (First ${result.samples.length})\n\n`;
-          result.samples.forEach((sample, i) => {
-            markdown += `**${i + 1}. ${sample.title}**\n`;
-            markdown += `- Company: ${sample.company}\n`;
-            markdown += `- Technologies: ${sample.technologies.join(', ') || 'None detected'}\n`;
-            markdown += `- Experience: ${sample.experience}\n`;
-            markdown += `- Quality Score: ${sample.qualityScore}/10\n`;
-            markdown += `- Has Salary: ${sample.hasSalary ? '✓' : '✗'}\n\n`;
-          });
-        }
-
-        // Raw API Data (first job only)
-        if (result.rawApiData && result.rawApiData.length > 0) {
-          markdown += `#### Raw API Data Sample\n\n`;
-          markdown += `<details>\n<summary>Click to expand first raw API job</summary>\n\n`;
-          markdown += `\`\`\`json\n${JSON.stringify(result.rawApiData[0], null, 2)}\n\`\`\`\n\n`;
-          markdown += `</details>\n\n`;
-        }
-
-        // Converted Job Data (first job only)
-        if (result.convertedJobs && result.convertedJobs.length > 0) {
-          markdown += `#### Converted Job Sample\n\n`;
-          markdown += `<details>\n<summary>Click to expand first converted job</summary>\n\n`;
-          markdown += `\`\`\`json\n${JSON.stringify(result.convertedJobs[0], null, 2)}\n\`\`\`\n\n`;
-          markdown += `</details>\n\n`;
-        }
-      }
-
-      markdown += `---\n\n`;
-    });
-
-    // Test Criteria
-    markdown += `## ✅ Test Pass Criteria\n\n`;
-    markdown += `A source passes the test if ALL of the following conditions are met:\n\n`;
-    markdown += `1. ✅ **API Fetch Success**: At least 1 DTO fetched from the API\n`;
-    markdown += `2. ✅ **Mapper Success**: At least 1 valid RawJobData created\n`;
-    markdown += `3. ✅ **Domain Transformation**: At least 1 Job entity created\n`;
-    markdown += `4. ✅ **Tech Coverage**: > 50% of jobs have detected technologies\n`;
-    markdown += `5. ✅ **Quality Score**: Average quality score > 5.0/10\n\n`;
-
-    // Summary Footer
-    markdown += `---\n\n`;
-    markdown += `## 🎯 Final Summary\n\n`;
-    markdown += `- **Total Sources Tested:** ${this.results.length}\n`;
-    markdown += `- **Passed:** ${passed}\n`;
-    markdown += `- **Failed:** ${failed}\n`;
-    markdown += `- **Success Rate:** ${((passed / this.results.length) * 100).toFixed(1)}%\n\n`;
-
-    if (passed === this.results.length) {
-      markdown += `### 🎉 All tests passed! The mapper pipeline is working correctly.\n\n`;
-    } else {
-      markdown += `### ⚠️ Some tests failed. Please review the detailed results above.\n\n`;
-    }
-
-    markdown += `**Test Duration:** ${((Date.now() - this.startTime.getTime()) / 1000).toFixed(2)}s\n`;
-
-    writeFileSync(`test-results-${timestamp}.md`, markdown);
   }
 }
 

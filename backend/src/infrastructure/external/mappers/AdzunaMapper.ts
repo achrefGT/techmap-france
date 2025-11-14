@@ -15,6 +15,7 @@ export class AdzunaMapper {
       title: dto.title,
       company: dto.company,
       description: dto.description,
+      technologies: dto.technologies,
       location: dto.location,
       isRemote: this.detectRemote(dto.location, dto.description),
       salaryMin: dto.salaryMinKEuros,

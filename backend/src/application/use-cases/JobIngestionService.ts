@@ -405,6 +405,8 @@ export class JobIngestionService {
    * Validates technologies against database and filters unknown ones
    * Includes retry logic for external detector calls
    */
+  // In JobIngestionService.ts, update the transformToDomainEntities method
+
   private async transformToDomainEntities(
     rawJobs: RawJobData[],
     result: IngestResult,
@@ -414,11 +416,15 @@ export class JobIngestionService {
 
     for (const raw of rawJobs) {
       try {
-        // Infrastructure layer: Detect technologies from description (with retry)
-        const detectedTechnologies = await this.retryOperation(
-          () => techDetector.detect(raw.description),
-          `Tech detection for job ${raw.id}`
-        );
+        // ✅ UPDATED: Use pre-detected technologies if available (e.g., from Adzuna)
+        // Otherwise detect from description (e.g., France Travail, Remotive)
+        const detectedTechnologies =
+          raw.technologies && raw.technologies.length > 0
+            ? raw.technologies
+            : await this.retryOperation(
+                () => techDetector.detect(raw.description),
+                `Tech detection for job ${raw.id}`
+              );
 
         // Validate detected technologies against known technologies
         const validTechnologies = this.filterValidTechnologies(

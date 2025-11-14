@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { writeFileSync } from 'fs';
 import { container } from '../src/presentation/api/container';
 import { IngestionConfig } from '../src/application/use-cases/IngestionOrchestrator';
 
@@ -27,12 +28,34 @@ import { IngestionConfig } from '../src/application/use-cases/IngestionOrchestra
 interface TestResult {
   passed: boolean;
   testName: string;
+  duration?: number;
   details?: string;
   error?: string;
+  data?: any;
+}
+
+interface TestSummary {
+  timestamp: string;
+  totalTests: number;
+  passedTests: number;
+  failedTests: number;
+  passRate: number;
+  totalDuration: number;
+  environment: {
+    nodeVersion: string;
+    platform: string;
+    source?: string;
+  };
+}
+
+interface PipelineTestReport {
+  summary: TestSummary;
+  tests: TestResult[];
 }
 
 class PipelineTestRunner {
   private results: TestResult[] = [];
+  private startTime: Date = new Date();
 
   async runAllTests(source?: string): Promise<void> {
     console.log('🧪 Starting Full Pipeline Integration Tests\n');
@@ -78,11 +101,16 @@ class PipelineTestRunner {
 
     // Display results
     this.displayResults();
+
+    // Generate JSON report
+    this.generateJSONReport(source);
   }
 
   private async testContainerHealth(): Promise<void> {
     console.log('\n📦 Test 1: Container Health Check');
     console.log('-'.repeat(60));
+
+    const testStart = Date.now();
 
     try {
       const health = await container.healthCheck();
@@ -91,7 +119,12 @@ class PipelineTestRunner {
         this.addResult({
           passed: true,
           testName: 'Container Health',
+          duration: Date.now() - testStart,
           details: 'All services initialized correctly',
+          data: {
+            status: health.status,
+            services: health.services,
+          },
         });
         console.log('✅ Container healthy');
         console.log(`   Database: ${health.services.database ? '✓' : '✗'}`);
@@ -103,7 +136,12 @@ class PipelineTestRunner {
         this.addResult({
           passed: false,
           testName: 'Container Health',
+          duration: Date.now() - testStart,
           error: 'Container unhealthy',
+          data: {
+            status: health.status,
+            services: health.services,
+          },
         });
         console.log('❌ Container unhealthy');
       }
@@ -111,35 +149,49 @@ class PipelineTestRunner {
       this.addResult({
         passed: false,
         testName: 'Container Health',
+        duration: Date.now() - testStart,
         error: error instanceof Error ? error.message : 'Unknown error',
+        data: {
+          stack: error instanceof Error ? error.stack : undefined,
+        },
       });
       console.log('❌ Container initialization failed');
     }
   }
 
   private async testDatabaseConnection(): Promise<void> {
-    console.log('\n🗄️  Test 2: Database Connection');
+    console.log('\n🗄️ Test 2: Database Connection');
     console.log('-'.repeat(60));
+
+    const testStart = Date.now();
 
     try {
       const orchestrator = container.orchestrator;
-      // Access private jobRepository through the orchestrator
       const jobRepo = (orchestrator as any).jobRepository;
 
-      // Try a simple query
       const jobCount = await jobRepo.count({});
 
       this.addResult({
         passed: true,
         testName: 'Database Connection',
+        duration: Date.now() - testStart,
         details: `Connected successfully. Found ${jobCount} existing jobs`,
+        data: {
+          jobCount,
+          connected: true,
+        },
       });
       console.log(`✅ Database connected (${jobCount} jobs in DB)`);
     } catch (error) {
       this.addResult({
         passed: false,
         testName: 'Database Connection',
+        duration: Date.now() - testStart,
         error: error instanceof Error ? error.message : 'Unknown error',
+        data: {
+          connected: false,
+          stack: error instanceof Error ? error.stack : undefined,
+        },
       });
       console.log('❌ Database connection failed');
     }
@@ -149,29 +201,45 @@ class PipelineTestRunner {
     console.log('\n🔧 Test 3: Technology Cache');
     console.log('-'.repeat(60));
 
-    try {
-      const techController = container.technologyController;
-      const technologies = await techController.getAllTechnologies(
-        {} as any,
-        { json: () => {} } as any,
-        () => {}
-      );
+    const testStart = Date.now();
 
-      // Technologies should be loaded
-      const techCount = (technologies as any)?.length || 0;
+    try {
+      // Direct repository access to bypass any caching issues
+      const orchestrator = container.orchestrator;
+      const techRepo = (orchestrator as any).ingestionService?.technologyRepository;
+
+      if (!techRepo) {
+        throw new Error('Technology repository not accessible');
+      }
+
+      const technologies = await techRepo.findAll();
+      const techCount = technologies.length;
 
       if (techCount > 0) {
         this.addResult({
           passed: true,
           testName: 'Technology Cache',
+          duration: Date.now() - testStart,
           details: `${techCount} technologies loaded`,
+          data: {
+            technologyCount: techCount,
+            sampleTechnologies: technologies.slice(0, 5).map((t: any) => ({
+              name: t.name,
+              category: t.category,
+              jobCount: t.jobCount,
+            })),
+          },
         });
         console.log(`✅ Technology cache loaded (${techCount} technologies)`);
       } else {
         this.addResult({
           passed: false,
           testName: 'Technology Cache',
+          duration: Date.now() - testStart,
           error: 'No technologies found. Run: npm run seed:technologies',
+          data: {
+            technologyCount: 0,
+          },
         });
         console.log('❌ No technologies in database');
       }
@@ -179,38 +247,59 @@ class PipelineTestRunner {
       this.addResult({
         passed: false,
         testName: 'Technology Cache',
+        duration: Date.now() - testStart,
         error: error instanceof Error ? error.message : 'Unknown error',
+        data: {
+          stack: error instanceof Error ? error.stack : undefined,
+        },
       });
       console.log('❌ Technology cache test failed');
     }
   }
 
   private async testRegionData(): Promise<void> {
-    console.log('\n🗺️  Test 4: Region Data');
+    console.log('\n🗺️ Test 4: Region Data');
     console.log('-'.repeat(60));
 
-    try {
-      const regionController = container.regionController;
-      const regions = await regionController.getAllRegions(
-        {} as any,
-        { json: () => {} } as any,
-        () => {}
-      );
+    const testStart = Date.now();
 
-      const regionCount = (regions as any)?.length || 0;
+    try {
+      // Direct repository access to bypass any caching issues
+      const orchestrator = container.orchestrator;
+      const regionRepo = (orchestrator as any).ingestionService?.regionRepository;
+
+      if (!regionRepo) {
+        throw new Error('Region repository not accessible');
+      }
+
+      const regions = await regionRepo.findAll();
+      const regionCount = regions.length;
 
       if (regionCount > 0) {
         this.addResult({
           passed: true,
           testName: 'Region Data',
+          duration: Date.now() - testStart,
           details: `${regionCount} regions loaded`,
+          data: {
+            regionCount,
+            sampleRegions: regions.slice(0, 5).map((r: any) => ({
+              name: r.name,
+              code: r.code,
+              jobCount: r.jobCount,
+            })),
+          },
         });
         console.log(`✅ Region data loaded (${regionCount} regions)`);
       } else {
         this.addResult({
           passed: false,
           testName: 'Region Data',
+          duration: Date.now() - testStart,
           error: 'No regions found. Run: npm run seed',
+          data: {
+            regionCount: 0,
+          },
         });
         console.log('❌ No regions in database');
       }
@@ -218,7 +307,11 @@ class PipelineTestRunner {
       this.addResult({
         passed: false,
         testName: 'Region Data',
+        duration: Date.now() - testStart,
         error: error instanceof Error ? error.message : 'Unknown error',
+        data: {
+          stack: error instanceof Error ? error.stack : undefined,
+        },
       });
       console.log('❌ Region data test failed');
     }
@@ -227,6 +320,8 @@ class PipelineTestRunner {
   private async testFullPipeline(source: string, limit: number): Promise<void> {
     console.log(`\n🔄 Test 5: Full Pipeline - ${source.toUpperCase()}`);
     console.log('-'.repeat(60));
+
+    const testStart = Date.now();
 
     try {
       const orchestrator = container.orchestrator;
@@ -245,27 +340,37 @@ class PipelineTestRunner {
           limit: limit,
         },
         batchSize: 50,
-        enableDeduplication: false, // Skip for speed in tests
+        enableDeduplication: false,
       };
 
       console.log(`   Fetching ${limit} jobs from ${source}...`);
-      const startTime = Date.now();
 
       const result = await orchestrator.ingestFromAllSources(config);
-
-      const duration = Date.now() - startTime;
+      const duration = Date.now() - testStart;
       const stats = result.sources[source];
 
       if (stats && stats.result.total > 0) {
         const successRate = (stats.result.inserted / stats.result.total) * 100;
 
         this.addResult({
-          passed: successRate > 30, // At least 30% success rate
+          passed: successRate > 30,
           testName: `Full Pipeline: ${source}`,
+          duration,
           details:
             `Fetched: ${stats.result.total}, Inserted: ${stats.result.inserted}, ` +
-            `Failed: ${stats.result.failed}, Success Rate: ${successRate.toFixed(1)}%, ` +
-            `Duration: ${duration}ms`,
+            `Failed: ${stats.result.failed}, Success Rate: ${successRate.toFixed(1)}%`,
+          data: {
+            source,
+            total: stats.result.total,
+            inserted: stats.result.inserted,
+            updated: stats.result.updated,
+            failed: stats.result.failed,
+            successRate: Math.round(successRate * 10) / 10,
+            errors: stats.result.errors,
+            qualityStats: stats.qualityStats,
+            dataCompleteness: stats.dataCompleteness,
+            technologyStats: stats.technologyStats,
+          },
         });
 
         console.log(`✅ Pipeline test complete for ${source}`);
@@ -286,7 +391,12 @@ class PipelineTestRunner {
         this.addResult({
           passed: false,
           testName: `Full Pipeline: ${source}`,
+          duration,
           error: 'No jobs fetched or processed',
+          data: {
+            source,
+            result: stats?.result || null,
+          },
         });
         console.log(`❌ No jobs fetched from ${source}`);
       }
@@ -294,7 +404,12 @@ class PipelineTestRunner {
       this.addResult({
         passed: false,
         testName: `Full Pipeline: ${source}`,
+        duration: Date.now() - testStart,
         error: error instanceof Error ? error.message : 'Unknown error',
+        data: {
+          source,
+          stack: error instanceof Error ? error.stack : undefined,
+        },
       });
       console.log(`❌ Pipeline test failed for ${source}`);
       console.log(`   Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -305,30 +420,36 @@ class PipelineTestRunner {
     console.log('\n🔍 Test 6: Data Integrity');
     console.log('-'.repeat(60));
 
+    const testStart = Date.now();
+
     try {
       const orchestrator = container.orchestrator;
       const jobRepo = (orchestrator as any).jobRepository;
 
-      // Fetch recent jobs from last 10 minutes
       const recentJobs = await jobRepo.findAll({ recentDays: 1 }, 1, 100);
 
       if (recentJobs.length === 0) {
         this.addResult({
           passed: false,
           testName: 'Data Integrity',
+          duration: Date.now() - testStart,
           error: 'No recent jobs found to validate',
+          data: {
+            jobsChecked: 0,
+          },
         });
         console.log('⚠️  No recent jobs to validate');
         return;
       }
 
-      // Validate job data
       let validJobs = 0;
       let hasDescription = 0;
       let hasTechnologies = 0;
       let hasRegion = 0;
       let hasSalary = 0;
       let hasExperience = 0;
+
+      const sampleJobs = [];
 
       for (const job of recentJobs) {
         if (job.title && job.company && job.description) {
@@ -339,6 +460,19 @@ class PipelineTestRunner {
         if (job.regionId) hasRegion++;
         if (job.salaryMinKEuros || job.salaryMaxKEuros) hasSalary++;
         if (job.experienceCategory !== 'unknown') hasExperience++;
+
+        // Collect sample jobs for report
+        if (sampleJobs.length < 3) {
+          sampleJobs.push({
+            title: job.title,
+            company: job.company,
+            technologies: job.technologies,
+            experienceCategory: job.experienceCategory,
+            qualityScore: job.calculateQualityScore(),
+            hasRegion: !!job.regionId,
+            hasSalary: !!(job.salaryMinKEuros || job.salaryMaxKEuros),
+          });
+        }
       }
 
       const integrity = (validJobs / recentJobs.length) * 100;
@@ -346,10 +480,24 @@ class PipelineTestRunner {
       this.addResult({
         passed: integrity > 90,
         testName: 'Data Integrity',
+        duration: Date.now() - testStart,
         details:
           `${validJobs}/${recentJobs.length} jobs valid (${integrity.toFixed(1)}%). ` +
           `Technologies: ${hasTechnologies}, Regions: ${hasRegion}, ` +
           `Salaries: ${hasSalary}, Experience: ${hasExperience}`,
+        data: {
+          jobsChecked: recentJobs.length,
+          validJobs,
+          integrityRate: Math.round(integrity * 10) / 10,
+          completeness: {
+            description: hasDescription,
+            technologies: hasTechnologies,
+            region: hasRegion,
+            salary: hasSalary,
+            experience: hasExperience,
+          },
+          sampleJobs,
+        },
       });
 
       console.log(`✅ Data integrity check complete`);
@@ -364,7 +512,11 @@ class PipelineTestRunner {
       this.addResult({
         passed: false,
         testName: 'Data Integrity',
+        duration: Date.now() - testStart,
         error: error instanceof Error ? error.message : 'Unknown error',
+        data: {
+          stack: error instanceof Error ? error.stack : undefined,
+        },
       });
       console.log('❌ Data integrity test failed');
     }
@@ -374,10 +526,11 @@ class PipelineTestRunner {
     console.log('\n🎯 Test 7: Orchestrator Coordination');
     console.log('-'.repeat(60));
 
+    const testStart = Date.now();
+
     try {
       const orchestrator = container.orchestrator;
 
-      // Test multi-source coordination
       const config: IngestionConfig = {
         franceTravail: { enabled: true, maxResults: 3 },
         adzuna: { enabled: true, maxPages: 1, keywords: 'developer' },
@@ -388,29 +541,55 @@ class PipelineTestRunner {
 
       console.log('   Testing multi-source coordination...');
       const result = await orchestrator.ingestFromAllSources(config);
+      const duration = Date.now() - testStart;
 
       const sourcesProcessed = result.summary.sourcesProcessed.length;
       const totalFetched = result.summary.totalFetched;
       const totalIngested = result.summary.totalIngested;
+      const successRate =
+        totalFetched > 0 ? Math.round((totalIngested / totalFetched) * 100 * 10) / 10 : 0;
 
       this.addResult({
         passed: sourcesProcessed > 0 && totalFetched > 0,
         testName: 'Orchestrator Coordination',
+        duration,
         details:
           `Processed ${sourcesProcessed} sources, fetched ${totalFetched} jobs, ` +
           `ingested ${totalIngested}`,
+        data: {
+          sourcesProcessed: result.summary.sourcesProcessed,
+          totalFetched,
+          totalIngested,
+          totalFailed: result.summary.totalFailed,
+          successRate,
+          deduplication: result.deduplication,
+          sourceBreakdown: Object.fromEntries(
+            Object.entries(result.sources).map(([source, stats]) => [
+              source,
+              {
+                total: stats.result.total,
+                inserted: stats.result.inserted,
+                failed: stats.result.failed,
+              },
+            ])
+          ),
+        },
       });
 
       console.log(`✅ Orchestrator coordination test complete`);
       console.log(`   Sources processed: ${sourcesProcessed}`);
       console.log(`   Total fetched:     ${totalFetched}`);
       console.log(`   Total ingested:    ${totalIngested}`);
-      console.log(`   Duration:          ${result.summary.duration}ms`);
+      console.log(`   Duration:          ${duration}ms`);
     } catch (error) {
       this.addResult({
         passed: false,
         testName: 'Orchestrator Coordination',
+        duration: Date.now() - testStart,
         error: error instanceof Error ? error.message : 'Unknown error',
+        data: {
+          stack: error instanceof Error ? error.stack : undefined,
+        },
       });
       console.log('❌ Orchestrator coordination test failed');
     }
@@ -432,7 +611,8 @@ class PipelineTestRunner {
 
     this.results.forEach(result => {
       const status = result.passed ? '✅' : '❌';
-      console.log(`${status} ${result.testName}`);
+      const duration = result.duration ? ` (${result.duration}ms)` : '';
+      console.log(`${status} ${result.testName}${duration}`);
       if (result.details) {
         console.log(`   ${result.details}`);
       }
@@ -455,6 +635,43 @@ class PipelineTestRunner {
     } else {
       console.log('❌ Many tests failed. Please fix issues before production use.\n');
     }
+  }
+
+  private generateJSONReport(source?: string): void {
+    const endTime = new Date();
+    const totalDuration = endTime.getTime() - this.startTime.getTime();
+
+    const passed = this.results.filter(r => r.passed).length;
+    const failed = this.results.filter(r => !r.passed).length;
+    const total = this.results.length;
+    const passRate = (passed / total) * 100;
+
+    const summary: TestSummary = {
+      timestamp: this.startTime.toISOString(),
+      totalTests: total,
+      passedTests: passed,
+      failedTests: failed,
+      passRate: Math.round(passRate * 10) / 10,
+      totalDuration,
+      environment: {
+        nodeVersion: process.version,
+        platform: process.platform,
+        source: source || 'all',
+      },
+    };
+
+    const report: PipelineTestReport = {
+      summary,
+      tests: this.results,
+    };
+
+    const timestamp = this.startTime.toISOString().replace(/[:.]/g, '-').slice(0, -5);
+    const filename = `pipeline-test-${timestamp}.json`;
+
+    writeFileSync(filename, JSON.stringify(report, null, 2));
+
+    console.log('📄 Reports generated:');
+    console.log(`   - ${filename}\n`);
   }
 }
 
