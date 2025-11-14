@@ -1,17 +1,21 @@
 -- Seed: Technologies
--- Common technologies in the French tech job market
+-- CRITICAL: 'name' column MUST match TechnologyDetector Map keys EXACTLY!
+-- The 'display_name' can be different (user-facing)
 -- Categories: frontend, backend, database, devops, ai-ml, mobile, other
+-- NOTE: Using 'ai-ml' (with hyphen) and 'devops' for cloud services (no 'cloud' or 'api' category)
 
 INSERT INTO technologies (name, category, display_name, job_count, created_at, updated_at) VALUES
 
 -- ============================================================================
--- FRONTEND
+-- FRONTEND (from TechnologyDetector)
 -- ============================================================================
 ('React', 'frontend', 'React', 0, NOW(), NOW()),
-('Vue.js', 'frontend', 'Vue.js', 0, NOW(), NOW()),
+('Vue', 'frontend', 'Vue.js', 0, NOW(), NOW()),                    -- Key: "Vue", Display: "Vue.js"
 ('Angular', 'frontend', 'Angular', 0, NOW(), NOW()),
 ('TypeScript', 'frontend', 'TypeScript', 0, NOW(), NOW()),
 ('JavaScript', 'frontend', 'JavaScript', 0, NOW(), NOW()),
+
+-- Additional frontend (not in detector yet)
 ('Next.js', 'frontend', 'Next.js', 0, NOW(), NOW()),
 ('Svelte', 'frontend', 'Svelte', 0, NOW(), NOW()),
 ('HTML', 'frontend', 'HTML', 0, NOW(), NOW()),
@@ -22,50 +26,36 @@ INSERT INTO technologies (name, category, display_name, job_count, created_at, u
 ('Vite', 'frontend', 'Vite', 0, NOW(), NOW()),
 
 -- ============================================================================
--- BACKEND
+-- BACKEND (from TechnologyDetector)
 -- ============================================================================
 ('Node.js', 'backend', 'Node.js', 0, NOW(), NOW()),
 ('Python', 'backend', 'Python', 0, NOW(), NOW()),
 ('Java', 'backend', 'Java', 0, NOW(), NOW()),
-('C#', 'backend', 'C#', 0, NOW(), NOW()),
+('Spring Boot', 'backend', 'Spring Boot', 0, NOW(), NOW()),
+('Django', 'backend', 'Django', 0, NOW(), NOW()),
+('FastAPI', 'backend', 'FastAPI', 0, NOW(), NOW()),
+('.NET', 'backend', '.NET', 0, NOW(), NOW()),
 ('Go', 'backend', 'Go', 0, NOW(), NOW()),
 ('PHP', 'backend', 'PHP', 0, NOW(), NOW()),
+
+-- Additional backend (not in detector yet)
+('C#', 'backend', 'C#', 0, NOW(), NOW()),
 ('Ruby', 'backend', 'Ruby', 0, NOW(), NOW()),
 ('Rust', 'backend', 'Rust', 0, NOW(), NOW()),
 ('Express.js', 'backend', 'Express.js', 0, NOW(), NOW()),
 ('NestJS', 'backend', 'NestJS', 0, NOW(), NOW()),
-('Django', 'backend', 'Django', 0, NOW(), NOW()),
 ('Flask', 'backend', 'Flask', 0, NOW(), NOW()),
-('FastAPI', 'backend', 'FastAPI', 0, NOW(), NOW()),
-('Spring Boot', 'backend', 'Spring Boot', 0, NOW(), NOW()),
 ('Laravel', 'backend', 'Laravel', 0, NOW(), NOW()),
 ('Ruby on Rails', 'backend', 'Ruby on Rails', 0, NOW(), NOW()),
-('.NET', 'backend', '.NET', 0, NOW(), NOW()),
 ('ASP.NET', 'backend', 'ASP.NET', 0, NOW(), NOW()),
 
 -- ============================================================================
--- DATABASE
--- ============================================================================
-('PostgreSQL', 'database', 'PostgreSQL', 0, NOW(), NOW()),
-('MySQL', 'database', 'MySQL', 0, NOW(), NOW()),
-('MongoDB', 'database', 'MongoDB', 0, NOW(), NOW()),
-('Redis', 'database', 'Redis', 0, NOW(), NOW()),
-('Elasticsearch', 'database', 'Elasticsearch', 0, NOW(), NOW()),
-('SQLite', 'database', 'SQLite', 0, NOW(), NOW()),
-('MariaDB', 'database', 'MariaDB', 0, NOW(), NOW()),
-('Oracle', 'database', 'Oracle', 0, NOW(), NOW()),
-('SQL Server', 'database', 'SQL Server', 0, NOW(), NOW()),
-('Cassandra', 'database', 'Cassandra', 0, NOW(), NOW()),
-('DynamoDB', 'database', 'DynamoDB', 0, NOW(), NOW()),
-
--- ============================================================================
--- DEVOPS
+-- DEVOPS (from TechnologyDetector)
 -- ============================================================================
 ('Docker', 'devops', 'Docker', 0, NOW(), NOW()),
 ('Kubernetes', 'devops', 'Kubernetes', 0, NOW(), NOW()),
-('AWS', 'devops', 'AWS', 0, NOW(), NOW()),
-('Azure', 'devops', 'Azure', 0, NOW(), NOW()),
-('GCP', 'devops', 'Google Cloud Platform', 0, NOW(), NOW()),
+
+-- Additional devops (not in detector yet)
 ('Terraform', 'devops', 'Terraform', 0, NOW(), NOW()),
 ('Ansible', 'devops', 'Ansible', 0, NOW(), NOW()),
 ('Jenkins', 'devops', 'Jenkins', 0, NOW(), NOW()),
@@ -79,10 +69,46 @@ INSERT INTO technologies (name, category, display_name, job_count, created_at, u
 ('Linux', 'devops', 'Linux', 0, NOW(), NOW()),
 
 -- ============================================================================
--- AI/ML
+-- CLOUD (from TechnologyDetector) - categorized as 'devops'
 -- ============================================================================
+('AWS', 'devops', 'AWS', 0, NOW(), NOW()),
+('Azure', 'devops', 'Azure', 0, NOW(), NOW()),
+('GCP', 'devops', 'Google Cloud Platform', 0, NOW(), NOW()),
+
+-- ============================================================================
+-- DATABASE (from TechnologyDetector)
+-- ============================================================================
+('PostgreSQL', 'database', 'PostgreSQL', 0, NOW(), NOW()),
+('MongoDB', 'database', 'MongoDB', 0, NOW(), NOW()),
+('Redis', 'database', 'Redis', 0, NOW(), NOW()),
+
+-- Additional databases (not in detector yet)
+('MySQL', 'database', 'MySQL', 0, NOW(), NOW()),
+('Elasticsearch', 'database', 'Elasticsearch', 0, NOW(), NOW()),
+('SQLite', 'database', 'SQLite', 0, NOW(), NOW()),
+('MariaDB', 'database', 'MariaDB', 0, NOW(), NOW()),
+('Oracle', 'database', 'Oracle', 0, NOW(), NOW()),
+('SQL Server', 'database', 'SQL Server', 0, NOW(), NOW()),
+('Cassandra', 'database', 'Cassandra', 0, NOW(), NOW()),
+('DynamoDB', 'database', 'DynamoDB', 0, NOW(), NOW()),
+
+-- ============================================================================
+-- API (from TechnologyDetector) - categorized as 'other'
+-- ============================================================================
+('GraphQL', 'other', 'GraphQL', 0, NOW(), NOW()),
+('REST API', 'other', 'REST API', 0, NOW(), NOW()),
+
+-- Additional API (not in detector yet)
+('gRPC', 'other', 'gRPC', 0, NOW(), NOW()),
+
+-- ============================================================================
+-- AI/ML (from TechnologyDetector) - using 'ai-ml' category (with hyphen)
+-- ============================================================================
+('Machine Learning', 'ai-ml', 'Machine Learning', 0, NOW(), NOW()),
 ('TensorFlow', 'ai-ml', 'TensorFlow', 0, NOW(), NOW()),
 ('PyTorch', 'ai-ml', 'PyTorch', 0, NOW(), NOW()),
+
+-- Additional AI/ML (not in detector yet)
 ('Scikit-learn', 'ai-ml', 'Scikit-learn', 0, NOW(), NOW()),
 ('Pandas', 'ai-ml', 'Pandas', 0, NOW(), NOW()),
 ('NumPy', 'ai-ml', 'NumPy', 0, NOW(), NOW()),
@@ -110,9 +136,6 @@ INSERT INTO technologies (name, category, display_name, job_count, created_at, u
 -- OTHER
 -- ============================================================================
 ('Git', 'other', 'Git', 0, NOW(), NOW()),
-('GraphQL', 'other', 'GraphQL', 0, NOW(), NOW()),
-('REST API', 'other', 'REST API', 0, NOW(), NOW()),
-('gRPC', 'other', 'gRPC', 0, NOW(), NOW()),
 ('Agile', 'other', 'Agile', 0, NOW(), NOW()),
 ('Scrum', 'other', 'Scrum', 0, NOW(), NOW()),
 ('JIRA', 'other', 'JIRA', 0, NOW(), NOW()),
@@ -129,8 +152,4 @@ ON CONFLICT (name) DO UPDATE SET
   display_name = EXCLUDED.display_name,
   updated_at = NOW();
 
--- Notes:
--- - job_count starts at 0 and will be updated by the analytics service
--- - Technologies are seeded with common French market skills
--- - Additional technologies will be auto-detected and added by TechnologyDetector
--- - Display names can differ from internal names (e.g., "Google Cloud Platform" vs "GCP")
+-- End of Technologies seed

@@ -31,6 +31,7 @@ export interface RawJobData {
   title: string;
   company: string;
   description: string;
+  technologies?: string[];
   location: string;
   isRemote: boolean;
   salaryMin: number | null;
